@@ -125,6 +125,59 @@ Requires **.NET 10** or later. No other dependencies.
 That is the **entire integration** for a call site. Retry, circuit breaker,
 timeout, logging, metrics, and correlation all happen inside `ExecuteAsync`.
 
+### Logging scenarios
+
+Logging is **optional and composable**. Every pipeline decision emits a
+structured JSON event. Whether those events go to a file, the console, a cloud
+provider, or nowhere at all is your choice at registration time.
+
+**Scenario 1 — Local only (typical for development or containers with stdout collection):**
+
+    builder.Services.AddPortfolioResilience(r => r
+        .AddLogSink(new ConsoleLogSink())    // stdout — captured by Docker/K8s
+        .AddPolicy("auth-service", p => { /* ... */ }));
+
+**Scenario 2 — Local file (for hosts without stdout collection, or a local audit trail):**
+
+    builder.Services.AddPortfolioResilience(r => r
+        .AddLogSink(new FileLogSink("/var/log/resilience"))   // daily rotating JSON Lines
+        .AddPolicy("auth-service", p => { /* ... */ }));
+
+**Scenario 3 — Cloud only (fully managed observability):**
+
+    builder.Services.AddPortfolioResilience(r => r
+        .AddLogSink(new OpenTelemetrySink(otelEndpoint))       // user-written, ~20 lines
+        .AddPolicy("auth-service", p => { /* ... */ }));
+
+**Scenario 4 — Hybrid (local + cloud, belt-and-suspenders):**
+
+    builder.Services.AddPortfolioResilience(r => r
+        .AddLogSink(new FileLogSink("/var/log/resilience"))    // local backup
+        .AddLogSink(new DatadogSink(apiKey: config["DD_API_KEY"]))   // cloud dashboards
+        .AddPolicy("auth-service", p => { /* ... */ }));
+
+**Scenario 5 — Silent (nothing logged):**
+
+    builder.Services.AddPortfolioResilience(r => r
+        .AddPolicy("auth-service", p => { /* ... */ }));
+    // No AddLogSink call → NullLogSink (silent default)
+
+**How the choice is made:**
+
+| Scenario | What you call | Where events land |
+|----------|---------------|-------------------|
+| Local only | `AddLogSink(ConsoleLogSink)` or `AddLogSink(FileLogSink)` | Local |
+| Cloud only | `AddLogSink(CustomCloudSink)` | Cloud |
+| **Hybrid** | **Multiple `AddLogSink(...)` calls** | **Both** |
+| Silent | *(no `AddLogSink` call)* | Nowhere |
+
+**`AddLogSink` composes.** Every call adds another destination. Multiple calls
+= multiple sinks, automatically wired through `CompositeLogSink`. A broken cloud
+sink never blocks the local one — a per-sink exception policy isolates them.
+
+See [docs/logging.md](docs/logging.md) for the full event schema, sample cloud
+sink implementations, and migration patterns.
+
 ## HttpClient integration
 
 If you prefer the handler pattern — every `HttpClient` request through a policy:
@@ -248,26 +301,73 @@ piece can be replaced.
 
 ## Comparison with other libraries
 
-| Feature | Portfolio.Resilience | Polly | Microsoft.Extensions.Http.Resilience |
-|---------|---------------------|-------|-------------------------------------|
-| Retry + backoff + jitter | ✅ | ✅ | ✅ |
+**Polly** is the .NET standard for resilience — 200M+ downloads, .NET Foundation
+member, and the base for Microsoft's own `Microsoft.Extensions.Resilience`. This
+library is **not a Polly replacement.** It has a different design center.
+
+### Feature comparison
+
+| Feature | Portfolio.Resilience | Polly | MS.Extensions.Http.Resilience |
+|---------|---------------------|-------|-------------------------------|
+| Retry + exponential backoff + jitter | ✅ | ✅ | ✅ |
 | Circuit breaker | ✅ | ✅ | ✅ |
 | Timeout per attempt | ✅ | ✅ | ✅ |
 | Fallback | ✅ | ✅ | ✅ |
-| Correlation ID (ambient) | ✅ | manual | partial |
-| Structured event schema | ✅ (cross-language) | manual | no |
-| Latency percentiles built-in | ✅ | no | external (OTel) |
-| Cross-language spec | ✅ | no | no |
-| Zero external dependencies | ✅ | ✅ | no |
+| **Rate limiter** | ⏳ v0.6.0 | ✅ | ✅ |
+| **Bulkhead isolation** | ⏳ v0.6.0 | ✅ | ✅ |
+| **Hedging** | ⏳ v0.7.0 | ✅ | ✅ |
+| **Policy composition (Wrap)** | ⏳ v0.7.0 | ✅ | ✅ |
+| **Chaos engineering (Simmy)** | ❌ | ✅ | ❌ |
+| **OpenTelemetry integration** | ⏳ v0.7.0 | ✅ | ✅ |
+| **Built-in cloud sinks** | ⏳ v0.8.0 | ecosystem | ecosystem |
+| **Ambient correlation IDs** | ✅ **built-in** | manual | partial |
+| **Structured event schema (cross-language)** | ✅ **SPEC.md** | manual | no |
+| **Latency percentiles built-in** | ✅ **no OTel required** | OTel only | OTel only |
+| **Zero external dependencies** | ✅ | ✅ | ❌ (Polly) |
 | .NET 10 target | ✅ | ✅ | ✅ |
+| Ecosystem maturity | new | 200M+ downloads | Microsoft-backed |
 
-**When to choose this library:** you want a single, opinionated, well-tested
-pipeline with built-in observability and a cross-language spec. Especially if you
-also have Python or Go services that need the same behavior.
+### What this library does differently
 
-**When not to choose this library:** you need maximum flexibility with
-compositional policies, or you're already committed to OpenTelemetry for
-observability and don't want a second metric system.
+Three design decisions that Polly deliberately leaves to the consumer:
+
+1. **Correlation IDs are built in.** Every event, exception, and metric carries
+   a `correlation_id` automatically. One HTTP header (`X-Correlation-Id`)
+   propagates across services. With Polly you wire this yourself.
+
+2. **Structured events have a cross-language contract.** `SPEC.md` defines every
+   event name (`retry_attempted`, `circuit_opened`, etc.), every field name
+   (`policy_name`, `attempt`, `duration_ms`), every metric name (`p50_ms`,
+   `error_rate`), and every error category. A future Python or Go implementation
+   produces **identical output**, so dashboards work across languages.
+
+3. **Observability is included, not deferred.** p50/p95/p99 latency, error rates,
+   and in-flight counts are computed by the library. No OpenTelemetry setup
+   required. If you already use OTel, our events feed it via a sink — but OTel
+   is not mandatory.
+
+### When to choose Polly / MS.Extensions.Resilience
+
+- You want the industry standard.
+- You need rate limiting, hedging, or bulkhead isolation **today**.
+- You're already invested in the Polly / OpenTelemetry ecosystem.
+- You want the widest ecosystem of plugins and community support.
+
+### When to choose Portfolio.Resilience
+
+- You want **correlation IDs and structured observability built in** rather than
+  assembled from separate pieces.
+- You have **multiple services in different languages** and want a consistent
+  event schema and error taxonomy.
+- You want a **small, dependency-free library** with no transitive package chain.
+- You want to learn from or extend a well-documented, spec-driven codebase.
+
+### Can I use both?
+
+Yes — they operate at different layers. Some teams use Polly for the fine-grained
+HTTP client pipeline and Portfolio.Resilience for the higher-level operation
+pipeline (database calls, Redis, cross-service business operations). Neither
+library knows or cares about the other.
 ---
 
 ## Documentation
@@ -348,13 +448,65 @@ each policy builder, the executor, and the HTTP handler.
 
 ## Roadmap
 
+Priority is driven by (1) what users need most and (2) closing the feature gap
+with Polly. Everything below is tracked in the repo's issues and planned in
+this order.
+
+### v0.5.x — Current line
+
 | Version | Status | What it adds |
 |---------|--------|--------------|
-| `v0.5.0` | Current | First public release. All core features. |
-| `v0.6.0` | Planned | Bulkhead isolation, adaptive retry |
-| `v1.0.0` | Planned | API freeze, spec 1.0 |
-| Python impl | Planned | `alexander_resilience` for FastAPI services |
-| Go impl | Planned | When notification-service adopts it |
+| `v0.5.0` | ✅ **Released** | First public release. Retry, circuit breaker, timeout, fallback, correlation, structured logging, metrics. |
+| `v0.5.1` | Planned | Documentation improvements, more examples. |
+
+### v0.6.0 — Rate Limiting and Bulkhead
+
+| Feature | Why it matters |
+|---------|---------------|
+| **Rate limiter** | Prevent hammering a dependency. Token-bucket + sliding-window. |
+| **Bulkhead isolation** | Cap concurrent calls to a resource. Prevents thread pool exhaustion. |
+
+### v0.7.0 — Composition and Observability
+
+| Feature | Why it matters |
+|---------|---------------|
+| **Policy composition (Wrap)** | Build custom pipeline orders instead of the hard-coded `retry → circuit → timeout`. |
+| **Hedging** | Parallel requests for latency-sensitive reads. |
+| **OpenTelemetry integration** | Native OTel exporter for events and metrics. |
+| **Roslyn analyzer** | Warn when `HttpClient.SendAsync` bypasses the wrapper. |
+
+### v0.8.0 — Cloud sinks and dashboard
+
+| Feature | Why it matters |
+|---------|---------------|
+| **Built-in `DatadogSink`** | Ship a first-party cloud sink. |
+| **Built-in `OpenTelemetrySink`** | Ready-made OTel exporter. |
+| **Built-in `ApplicationInsightsSink`** | Azure-native option. |
+| **`AddStandardResilienceHandler()`** | One-liner for `HttpClientFactory` — matches Microsoft's helper. |
+
+### v1.0.0 — API freeze
+
+| Feature | Why it matters |
+|---------|---------------|
+| **API freeze** | Public API is locked. Semver guarantees apply. |
+| **SPEC 1.0** | Cross-language contract finalized. |
+| **Documentation website** | Full site at `sancy1.github.io/portfolio-resilience`. |
+| **Performance benchmarks** | Throughput and latency under load, published in the README. |
+
+### v1.x and beyond — Polyglot
+
+| Feature | Why it matters |
+|---------|---------------|
+| **Python implementation** | `portfolio_resilience` on PyPI for FastAPI services. Same SPEC. |
+| **Go implementation** | For the notification-service and future Go services. |
+| **Chaos engineering hooks** | Inject faults for resilience testing (like Polly's Simmy). |
+| **Additional languages** | Whatever the portfolio grows into. |
+
+### What we intentionally exclude
+
+- **A `Dashboard` UI** — the health endpoint is enough. UI is a separate concern.
+- **A `RateLimit` middleware replacement** — ASP.NET Core has rate limiting built in; use it at the edge, use us for outbound calls.
+- **Retries for non-idempotent operations** — enforced at the policy level, not automated.
 
 See [CHANGELOG.md](CHANGELOG.md) for historical changes.
 

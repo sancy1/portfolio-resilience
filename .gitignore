@@ -68,3 +68,11 @@ Thumbs.db
 *.key
 !*.pub.key
 secrets.json
+
+# =============================================================
+# Private / internal planning (do not commit)
+# =============================================================
+PLANNING.md
+notes/
+TODO.local.md
+*.private.md
