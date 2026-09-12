@@ -9,7 +9,30 @@ purpose:  Version history for the resilience library.
 All notable changes to `Portfolio.Resilience`. Format follows [Keep a Changelog](https://keepachangelog.com/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
-## [0.4.0] - Stages F and G complete
+## [0.5.1] - 2026-09-12
+
+### Documentation
+
+- **README.md: new "Logging scenarios" section** — five configurations for
+  choosing where resilience events go:
+  - Local-only (ConsoleLogSink or FileLogSink)
+  - Cloud-only (custom ILogSink implementation)
+  - Hybrid (local + cloud via CompositeLogSink)
+  - Silent (NullLogSink — no configuration)
+  - Includes a decision table mapping each scenario to the API call.
+- **README.md: expanded "Comparison with other libraries"** — added side-by-side
+  feature table with Polly and Microsoft.Extensions.Http.Resilience.
+- **README.md: enriched "Roadmap" section** — versioned plan through v1.x.
+
+### Internal
+
+- **PLANNING.md** — new private planning document (not committed; see `.gitignore`).
+- **.gitignore** — added private planning files.
+
+### Compatibility
+
+- **No code changes.** Binary-compatible with 0.5.0. All 237 tests pass.
+## [0.5.0] - Stages F and G complete
 
 ### Added (Stage F - Executor & DI)
 
