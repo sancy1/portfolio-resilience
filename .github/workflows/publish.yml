@@ -1,0 +1,76 @@
+﻿# filepath: .github/workflows/publish.yml
+# purpose:  Publish Portfolio.Resilience to nuget.org when a version tag is pushed.
+#           Uses Trusted Publishing (OIDC) — no API keys stored anywhere.
+
+name: publish
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'      # v0.5.0, v1.0.0, v2.3.1, etc.
+  workflow_dispatch:   # allow manual trigger from the Actions tab
+
+permissions:
+  id-token: write      # required for OIDC token exchange with nuget.org
+  contents: read       # required to checkout the repository
+
+jobs:
+  publish:
+    name: Pack and publish to nuget.org
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore dotnet/Portfolio.Resilience.slnx
+
+      - name: Build (Release)
+        run: dotnet build dotnet/Portfolio.Resilience.slnx --no-restore --configuration Release
+
+      - name: Test (Release)
+        run: dotnet test dotnet/Portfolio.Resilience.slnx --no-build --configuration Release
+
+      - name: Pack
+        run: dotnet pack dotnet/src/Portfolio.Resilience/Portfolio.Resilience.csproj --no-build --configuration Release --output ./nupkg
+
+      - name: List pack output
+        run: ls -la ./nupkg
+
+      # ---------------------------------------------------------------
+      # Trusted Publishing (OIDC) — nuget.org validates the request
+      # against the trust policy we configured:
+      #   Repository Owner: sancy1
+      #   Repository:       portfolio-resilience
+      #   Workflow:         publish.yml
+      # No API key needed. No secrets stored.
+      # ---------------------------------------------------------------
+      - name: NuGet login (OIDC)
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: sancy
+
+      - name: Push to nuget.org
+        run: |
+          dotnet nuget push ./nupkg/*.nupkg \
+            --api-key ${{ steps.login.outputs.NUGET_API_KEY }} \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+
+      - name: Push symbols (.snupkg) to nuget.org
+        run: |
+          dotnet nuget push ./nupkg/*.snupkg \
+            --api-key ${{ steps.login.outputs.NUGET_API_KEY }} \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+        continue-on-error: true    # symbols upload is best-effort
