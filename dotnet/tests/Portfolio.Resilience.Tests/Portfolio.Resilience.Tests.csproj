@@ -1,0 +1,26 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+<PropertyGroup>
+<TargetFramework>net10.0</TargetFramework>
+    <EnableDefaultAspNetCoreItems>false</EnableDefaultAspNetCoreItems>
+<ImplicitUsings>enable</ImplicitUsings>
+<Nullable>enable</Nullable>
+<RootNamespace>Portfolio.Resilience.Tests</RootNamespace>
+<IsPackable>false</IsPackable>
+</PropertyGroup>
+
+<ItemGroup>
+<PackageReference Include="FluentAssertions" Version="7.1.0" />
+<PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+<PackageReference Include="NSubstitute" Version="5.3.0" />
+<PackageReference Include="xunit" Version="2.9.2" />
+<PackageReference Include="xunit.runner.visualstudio" Version="3.0.0" />
+</ItemGroup>
+
+<ItemGroup>
+<ProjectReference Include="..\..\src\Portfolio.Resilience\Portfolio.Resilience.csproj" />
+</ItemGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+</Project>
