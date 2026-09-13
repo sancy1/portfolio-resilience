@@ -118,6 +118,159 @@ requests-per-second.
 
 **Example:** `PermitLimit = 20` → never more than 20 concurrent calls.
 
+## Usage examples
+
+### Each strategy, in `Program.cs`
+
+**Token bucket** — smooth rate with bursts up to capacity:
+
+    builder.Services.AddPortfolioResilience(r => r
+        .AddPolicy("stripe-api", p =>
+        {
+            p.RateLimiter.Enabled       = true;
+            p.RateLimiter.Strategy      = RateLimitStrategy.TokenBucket;
+            p.RateLimiter.PermitLimit   = 100;   // bucket capacity
+            p.RateLimiter.WindowSeconds = 60;    // refills 100 tokens per 60s
+        }));
+
+**Sliding window** — precise; no boundary effects (the default):
+
+    builder.Services.AddPortfolioResilience(r => r
+        .AddPolicy("github-api", p =>
+        {
+            p.RateLimiter.Enabled       = true;
+            p.RateLimiter.Strategy      = RateLimitStrategy.SlidingWindow;
+            p.RateLimiter.PermitLimit   = 5000;  // GitHub's hourly limit
+            p.RateLimiter.WindowSeconds = 3600;
+        }));
+
+**Fixed window** — cheapest; tolerates boundary bursts:
+
+    builder.Services.AddPortfolioResilience(r => r
+        .AddPolicy("internal-batch-api", p =>
+        {
+            p.RateLimiter.Enabled       = true;
+            p.RateLimiter.Strategy      = RateLimitStrategy.FixedWindow;
+            p.RateLimiter.PermitLimit   = 1000;
+            p.RateLimiter.WindowSeconds = 60;
+        }));
+
+**Concurrency limit** — caps in-flight calls; no time window:
+
+    builder.Services.AddPortfolioResilience(r => r
+        .AddPolicy("redis-cache", p =>
+        {
+            p.RateLimiter.Enabled     = true;
+            p.RateLimiter.Strategy    = RateLimitStrategy.ConcurrencyLimit;
+            p.RateLimiter.PermitLimit = 50;   // max simultaneous connections
+            // WindowSeconds is ignored for this strategy
+        }));
+
+### Worked example — SlidingWindow with PermitLimit = 3, WindowSeconds = 10
+
+A table of what happens over time, using a `SlidingWindow` limiter with a
+10-second window and a permit limit of 3:
+
+| Time | Call | Window contents | Decision | Reason |
+|------|------|-----------------|----------|--------|
+| 0s   | 1    | {0}             | ✅ allow | 1 of 3 |
+| 1s   | 2    | {0, 1}          | ✅ allow | 2 of 3 |
+| 2s   | 3    | {0, 1, 2}       | ✅ allow | 3 of 3 |
+| 3s   | 4    | {0, 1, 2}       | ❌ reject | full — `rejected_immediately` |
+| 5s   | 5    | {0, 1, 2}       | ❌ reject | full |
+| 10s  | 6    | {1, 2} (0 expired) | ✅ allow | 2 of 3 |
+| 11s  | 7    | {1, 2, 10}      | ✅ allow | 3 of 3 |
+| 12s  | 8    | {1, 2, 10, 11}  | ❌ reject | full — 1 is oldest, expires at 11s? No, at 11s+10s=21s |
+
+The window **rolls**: a call at time 0s leaves the window at time 10s
+(0 + WindowSeconds). The next call sees the updated count and gets the freed
+permit.
+
+**Notice the difference from `FixedWindow`:** at time 10s (bucket boundary in
+a fixed-window model), `SlidingWindow` still counts calls from 1s and 2s. It
+does not "reset" — it removes each timestamp individually as it expires. This
+is why `SlidingWindow` has no boundary bursts.
+
+### Three real-world patterns
+
+**Pattern 1 — external API with a published rate limit.**
+
+The provider publishes a limit. Match it exactly, minus a safety margin.
+
+    builder.Services.AddPortfolioResilience(r => r
+        .AddPolicy("stripe-api", p =>
+        {
+            p.RateLimiter.Enabled       = true;
+            p.RateLimiter.Strategy      = RateLimitStrategy.SlidingWindow;
+            p.RateLimiter.PermitLimit   = 90;    // provider limit is 100/min
+            p.RateLimiter.WindowSeconds = 60;
+            p.RateLimiter.QueueLimit    = 0;     // reject immediately; retry handles retries
+            p.Retry.MaxAttempts         = 2;     // retry 429s from provider
+            p.Retry.BaseDelayMs         = 200;
+        }));
+
+**Pattern 2 — internal service that must not be overwhelmed.**
+
+Set the limit based on the dependency's measured capacity, plus a queue for
+latency-tolerant callers.
+
+    builder.Services.AddPortfolioResilience(r => r
+        .AddPolicy("content-service", p =>
+        {
+            p.RateLimiter.Enabled        = true;
+            p.RateLimiter.Strategy       = RateLimitStrategy.TokenBucket;
+            p.RateLimiter.PermitLimit    = 500;   // service handles ~500 RPS
+            p.RateLimiter.WindowSeconds  = 1;
+            p.RateLimiter.QueueLimit     = 20;    // let callers wait briefly
+            p.RateLimiter.QueueTimeoutMs = 200;   // max 200ms wait
+        }));
+
+**Pattern 3 — background job that paces itself.**
+
+The job does not care about latency; it cares about not hammering the
+dependency. Use a small permit limit and a deep queue with a long timeout.
+
+    builder.Services.AddPortfolioResilience(r => r
+        .AddPolicy("archive-api", p =>
+        {
+            p.RateLimiter.Enabled        = true;
+            p.RateLimiter.Strategy       = RateLimitStrategy.FixedWindow;
+            p.RateLimiter.PermitLimit    = 10;    // 10 calls per minute
+            p.RateLimiter.WindowSeconds  = 60;
+            p.RateLimiter.QueueLimit     = 100;   // generous queue
+            p.RateLimiter.QueueTimeoutMs = 10_000; // up to 10s wait per call
+            p.Timeout.TimeoutMs          = 30_000; // the op itself can be slow
+        }));
+
+### Reading the rejection in code
+
+When a call is rejected, you can inspect the exception:
+
+    try
+    {
+        await _resilience.ExecuteAsync("stripe-api", ct => _stripe.ChargeAsync(...), ct: ct);
+    }
+    catch (ResilienceException ex) when (ex.Category == ResilienceErrorCategory.Transient)
+    {
+        // Rate limited. The reason tells you why.
+        var reason = ex.Metadata?["reason"] as string;
+        // "rejected_immediately" | "queue_timeout" | "queue_full"
+
+        var strategy = ex.Metadata?["strategy"] as string;
+        // "TokenBucket" | "SlidingWindow" | "FixedWindow" | "ConcurrencyLimit"
+
+        _logger.LogWarning(
+            "Rate limited on {Strategy}: {Reason} (permit_limit={Limit})",
+            strategy, reason, ex.Metadata?["permit_limit"]);
+    }
+
+Or provide a per-call fallback and let the pipeline invoke it:
+
+    await _resilience.ExecuteAsync(
+        "stripe-api",
+        ct => _stripe.ChargeAsync(...),
+        fallback: ct => Task.FromResult(ChargeResult.Queued),
+        ct: ct);
 ## Queue behavior
 
 When a call would be rejected, the rate limiter can let it **wait** for capacity

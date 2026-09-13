@@ -96,6 +96,149 @@ Slots are released in a `finally` block, so a slot is returned whether the
 operation succeeds, throws, or is cancelled. A failed operation does **not**
 hold its slot.
 
+## Usage examples
+
+### Basic setup in `Program.cs`
+
+    builder.Services.AddPortfolioResilience(r => r
+        .AddPolicy("external-api", p =>
+        {
+            p.Bulkhead.Enabled        = true;
+            p.Bulkhead.MaxConcurrency = 20;   // at most 20 in flight
+            p.Bulkhead.MaxQueue       = 10;   // up to 10 waiters
+            p.Bulkhead.QueueTimeoutMs = 2000; // each waiter waits at most 2s
+        }));
+
+### Worked example — MaxConcurrency = 2, MaxQueue = 1, QueueTimeoutMs = 500
+
+A table of what happens when 5 calls arrive at nearly the same time, against a
+dependency that takes 300ms to respond:
+
+| Call | Arrives at | State | Decision | Notes |
+|------|-----------|-------|----------|-------|
+| 1    | 0ms       | slot free | ✅ acquire | runs immediately |
+| 2    | 5ms       | slot free | ✅ acquire | runs immediately (2nd slot) |
+| 3    | 10ms      | both slots busy, queue empty | ⏳ enqueue | waits in the queue |
+| 4    | 15ms      | both slots busy, queue full (1/1) | ❌ reject | `queue_full` |
+| 5    | 20ms      | both slots busy, queue full | ❌ reject | `queue_full` |
+| 1 completes | 300ms | slot free | — | queue wakes call 3 |
+| 3 runs  | 300ms–600ms | — | ✅ runs | waited 290ms, under 500ms timeout |
+
+**What the counters look like at 20ms:** `in_flight = 2`, `waiting = 1`,
+`slots_free = 0`, `queue_capacity_used = 1/1`.
+
+**What happens if call 1 is slow (takes 700ms):** call 3's wait would exceed
+`QueueTimeoutMs = 500`, so it would reject with `queue_timeout` at 510ms,
+before the slot frees.
+
+### Three real-world patterns
+
+**Pattern 1 — protect the thread pool from a slow external dependency.**
+
+The dependency is slow. Without a bulkhead, 500 concurrent calls would tie up
+500 threads. With `MaxConcurrency = 30`, only 30 threads are consumed at a
+time; the rest queue briefly or fail fast.
+
+    builder.Services.AddPortfolioResilience(r => r
+        .AddPolicy("slow-legacy-api", p =>
+        {
+            p.Bulkhead.Enabled        = true;
+            p.Bulkhead.MaxConcurrency = 30;   // matches the caller's thread budget
+            p.Bulkhead.MaxQueue       = 15;   // brief queue absorbs bursts
+            p.Bulkhead.QueueTimeoutMs = 500;  // short wait; fail fast
+
+            p.Timeout.TimeoutMs       = 10_000; // op itself can take up to 10s
+            p.Circuit.FailureThreshold = 10;    // complement the bulkhead
+        }));
+
+**Pattern 2 — cap database connections per service.**
+
+A service with `MaxPoolSize = 20` on its connection pool should bulkhead
+database calls to at most 20 concurrent. Beyond that, either queue or reject —
+never exceed the pool.
+
+    builder.Services.AddPortfolioResilience(r => r
+        .AddPolicy("postgres-primary", p =>
+        {
+            p.Bulkhead.Enabled        = true;
+            p.Bulkhead.MaxConcurrency = 20;   // = MaxPoolSize
+            p.Bulkhead.MaxQueue       = 40;   // 2x concurrency; absorbs bursts
+            p.Bulkhead.QueueTimeoutMs = 2000; // up to 2s wait for a connection
+        }));
+
+**Pattern 3 — background workers against a bounded queue.**
+
+The workers do not need fast failure; they need to keep working through
+backpressure. Use a generous queue with a long timeout.
+
+    builder.Services.AddPortfolioResilience(r => r
+        .AddPolicy("sendgrid-api", p =>
+        {
+            p.Bulkhead.Enabled        = true;
+            p.Bulkhead.MaxConcurrency = 10;
+            p.Bulkhead.MaxQueue       = 100;     // queue up emails
+            p.Bulkhead.QueueTimeoutMs = 30_000;  // up to 30s wait per email
+
+            p.RateLimiter.Enabled     = true;    // SendGrid has a rate limit too
+            p.RateLimiter.Strategy    = RateLimitStrategy.SlidingWindow;
+            p.RateLimiter.PermitLimit = 100;
+            p.RateLimiter.WindowSeconds = 1;
+        }));
+
+### Reading the rejection in code
+
+Same pattern as the rate limiter — inspect `Metadata`:
+
+    try
+    {
+        await _resilience.ExecuteAsync("external-api", ct => _api.GetAsync(ct), ct: ct);
+    }
+    catch (ResilienceException ex) when (ex.Category == ResilienceErrorCategory.Transient)
+    {
+        var reason = ex.Metadata?["reason"] as string;
+        // "rejected_immediately" | "queue_full" | "queue_timeout"
+
+        var cap = ex.Metadata?["max_concurrency"];
+        var queue = ex.Metadata?["max_queue"];
+        var depth = ex.Metadata?["queue_depth"];
+
+        _logger.LogWarning(
+            "Bulkhead rejected call: {Reason} (cap={Cap}, queue={Queue}, depth={Depth})",
+            reason, cap, queue, depth);
+    }
+
+Or provide a per-call fallback — a degraded response rather than an error:
+
+    await _resilience.ExecuteAsync(
+        "external-api",
+        ct => _api.GetAsync(ct),
+        fallback: ct => Task.FromResult(DataDto.Cached),
+        ct: ct);
+
+### Combining with the rate limiter
+
+The two layers compose — both can be enabled on the same policy. The rate
+limiter caps *rate*; the bulkhead caps *concurrency*:
+
+    builder.Services.AddPortfolioResilience(r => r
+        .AddPolicy("external-api", p =>
+        {
+            // At most 100 calls per minute
+            p.RateLimiter.Enabled       = true;
+            p.RateLimiter.Strategy      = RateLimitStrategy.SlidingWindow;
+            p.RateLimiter.PermitLimit   = 100;
+            p.RateLimiter.WindowSeconds = 60;
+
+            // At most 20 running at once
+            p.Bulkhead.Enabled        = true;
+            p.Bulkhead.MaxConcurrency = 20;
+            p.Bulkhead.MaxQueue       = 10;
+            p.Bulkhead.QueueTimeoutMs = 2000;
+        }));
+
+In the pipeline, the rate limiter gates first. Calls that pass the rate limit
+compete for a bulkhead slot. This means: even if the rate is fine, the
+dependency never sees more than 20 simultaneous connections.
 ## Rejection metadata
 
 When the bulkhead rejects a call, it:
