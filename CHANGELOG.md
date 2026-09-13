@@ -9,6 +9,22 @@ purpose:  Version history for the resilience library.
 All notable changes to `Portfolio.Resilience`. Format follows [Keep a Changelog](https://keepachangelog.com/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [0.6.1] - 2026-09-13
+
+### Documentation
+
+- **README.md: new "What ships in the box" section** - a single consolidated
+  table of every concern the library provides, with the type(s) that implement
+  it and the doc that explains it. Placed immediately after the
+  cross-cutting-concerns table so a reader sees the full surface in one view.
+- **README.md: corrected test count** from 273 to 301. The count was accurate
+  when v0.6.0's README was first drafted but drifted when the integration tests
+  landed in a later commit. Corrected in both the repository-structure tree and
+  the test-suite section.
+
+### Compatibility
+
+- **No code changes.** Binary-compatible with 0.6.0. All 301 tests pass.
 ## [0.6.0] - 2026-09-13
 
 ### Added — Rate Limiter

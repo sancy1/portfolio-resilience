@@ -65,6 +65,30 @@ And three cross-cutting concerns:
 | **Metrics** | p50/p95/p99, error rate, in-flight counts, per policy | [metrics.md](docs/metrics.md) |
 | **Correlation** | One ID across every service in a request trace | [correlation.md](docs/correlation.md) |
 
+### What ships in the box
+
+Every concern below is **built in, tested, and documented**. No add-ons required.
+
+| Concern | What it does | Lives in | Docs |
+|---------|-------------|----------|------|
+| **Rate Limiter** | Caps how many calls may proceed per time period. Four strategies: `TokenBucket`, `SlidingWindow`, `FixedWindow`, `ConcurrencyLimit`. | `RateLimiterPolicyBuilder`, `RateLimiterOptions` | [rate-limiter.md](docs/rate-limiter.md) |
+| **Bulkhead** | Caps how many calls may run concurrently. Queues excess up to `QueueLimit`; times out after `QueueTimeoutMs`. | `BulkheadPolicyBuilder`, `BulkheadOptions` | [bulkhead.md](docs/bulkhead.md) |
+| **Retry** | Absorbs transient failures with exponential backoff + jitter. Classifier-gated: permanent errors fail immediately. | `RetryPolicyBuilder`, `RetryOptions` | [retry.md](docs/retry.md) |
+| **Circuit Breaker** | Fails fast when a dependency is genuinely broken. Three-state machine (`Closed` / `Open` / `HalfOpen`) with automatic recovery. | `CircuitPolicyBuilder`, `CircuitOptions` | [circuit-breaker.md](docs/circuit-breaker.md) |
+| **Timeout** | Bounds every attempt. Distinguishes caller cancellation from our own ceiling. | `TimeoutPolicyBuilder`, `TimeoutOptions` | [timeout.md](docs/timeout.md) |
+| **Fallback** | Returns a degraded response when the pipeline fails. Per-call, not per-policy. | Per-call argument to `IResilienceExecutor.ExecuteAsync` | [executor.md](docs/executor.md) |
+| **Executor** | Coordinates the whole pipeline plus events, metrics, correlation. | `ResilienceExecutor`, `IResilienceExecutor` | [executor.md](docs/executor.md) |
+| **Structured Logging** | Emits one JSON event at every pipeline decision. Sink-swappable: `ConsoleLogSink`, `FileLogSink`, `NullLogSink`, `CompositeLogSink`. Cloud sinks are 20-line add-ons. | `ILogSink`, `ResilienceEventEmitter`, `ResilienceEvent` | [logging.md](docs/logging.md) |
+| **Metrics** | p50/p95/p99 latency, error rate, average, in-flight counts per policy. No OpenTelemetry required. | `IMetricSink`, `InMemoryMetricSink`, `ILatencyTracker` | [metrics.md](docs/metrics.md) |
+| **Correlation IDs** | Ambient correlation ID attached to every event, exception, and metric. Propagates via `X-Correlation-Id` across services. | `CorrelationContext` (`AsyncLocal`), `AsyncLocalCorrelationAccessor` | [correlation.md](docs/correlation.md) |
+| **Error Classification** | Maps any exception to one of six categories: `Transient`, `Permanent`, `CircuitOpen`, `Timeout`, `FallbackUsed`, `Unknown`. Configurable HTTP codes, SQLSTATEs, exception types. | `ErrorClassifier`, `ErrorClassificationOptions` | [error-classification.md](docs/error-classification.md) |
+| **HTTP Integration** | Every `HttpClient` request runs through the pipeline. One-line fluent API. | `ResilientHttpMessageHandler`, `AddResilientHandler()` | [http-integration.md](docs/http-integration.md) |
+| **Middleware Base** | Catch `ResilienceException` at the service boundary. Render errors in your own service's response shape - the library shares the mechanism, you own the envelope. | `ResilienceExceptionMiddlewareBase` | [executor.md](docs/executor.md) |
+| **DI + Config** | One-line registration. Bind policies from `appsettings.json` or environment variables. | `AddPortfolioResilience()`, `LoadFromConfiguration()` | [executor.md](docs/executor.md) |
+| **Startup Validation** | Misconfigured policies log a clear warning at first resolve. The library never crashes the caller. | `ResiliencePolicyRegistry` + `RateLimiterOptions.Validate()` / `BulkheadOptions.Validate()` | [rate-limiter.md](docs/rate-limiter.md), [bulkhead.md](docs/bulkhead.md) |
+
+**Observability is not bolted on.** Every layer in the pipeline above emits structured events via `ILogSink` and records latency via `IMetricSink`. Every event carries a `correlation_id`. The two side channels run parallel to the execution pipeline - no configuration required to get events or metrics; they work out of the box with sensible defaults.
+
 ---
 
 ## Install
@@ -464,12 +488,12 @@ Full documentation lives in [`docs/`](docs/):
         +-- api-stability.md
     +-- dotnet/
         +-- src/Portfolio.Resilience/         - the library source
-        +-- tests/Portfolio.Resilience.Tests/ - 273 tests
+        +-- tests/Portfolio.Resilience.Tests/ - 301 tests
         +-- Portfolio.Resilience.slnx
 
 ## Test suite
 
-273 tests, 0 failures, 0 warnings. Run them with:
+301 tests, 0 failures, 0 warnings. Run them with:
 
     cd dotnet
     dotnet test Portfolio.Resilience.slnx
