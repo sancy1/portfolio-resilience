@@ -1,14 +1,16 @@
 ﻿// filepath: src/Portfolio.Resilience/Extensions/ServiceCollectionExtensions.cs
-// layer: Extensions | package: Portfolio.Resilience | since: v0.3.0
+// layer: Extensions | package: Portfolio.Resilience | since: v0.6.0
 // purpose: One-line DI registration. Wires the whole library with sensible defaults, overridable.
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // RELATIONSHIPS
 //   Implements : n/a (static extension class)
-//   Depends on : IServiceCollection, ResilienceOptions, all sinks and implementations
+//   Depends on : IServiceCollection, ResilienceOptions, ResiliencePolicyRegistry,
+//                all policy builders, all sinks and implementations
 //   Used by    : every service's Program.cs
-//   See also   : docs/executor.md, README.md
-// ─────────────────────────────────────────────────────────────────────────────
+//   See also   : docs/executor.md, README.md, docs/rate-limiter.md, docs/bulkhead.md
+// -----------------------------------------------------------------------------
 
+using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Portfolio.Resilience.Abstractions;
 using Portfolio.Resilience.Configuration;
@@ -23,8 +25,7 @@ namespace Portfolio.Resilience.Extensions;
 /// Registers the resilience library with the DI container. Call once during startup:
 /// <code>
 /// builder.Services.AddPortfolioResilience(r => r
-///     .Logging.AddConsole()
-///     .Metrics.AddInMemory()
+///     .AddLogSink(new ConsoleLogSink())
 ///     .AddPolicy("auth-service", p => p.Timeout.TimeoutMs = 5000));
 /// </code>
 /// </summary>
@@ -40,7 +41,7 @@ public static class ServiceCollectionExtensions
         var builder = new ResilienceBuilder();
         configure?.Invoke(builder);
 
-        // Always register the InMemoryMetricSink — it's the read-side data source for
+        // Always register the InMemoryMetricSink - it is the read-side data source for
         // ILatencyTracker and the /health/resilience endpoint. Any other metric sinks
         // (Prometheus, Datadog) are added as additional children of a CompositeMetricSink.
         var inMemoryMetricSink = new InMemoryMetricSink();
@@ -68,10 +69,11 @@ public static class ServiceCollectionExtensions
             };
         });
 
-        // Configuration
+        // Configuration. Policy validation warnings are routed through Trace -
+        // see ResiliencePolicyRegistry for the once-per-policy behaviour.
         services.AddSingleton(builder.Options);
         services.AddSingleton<IResiliencePolicyRegistry>(_ =>
-            new ResiliencePolicyRegistry(builder.Options));
+            new ResiliencePolicyRegistry(builder.Options, Warn));
 
         // Correlation
         services.AddSingleton<ICorrelationAccessor, Correlation.AsyncLocalCorrelationAccessor>();
@@ -88,13 +90,19 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<TimeoutPolicyBuilder>();
         services.AddSingleton<CircuitPolicyBuilder>(sp =>
             new CircuitPolicyBuilder(sp.GetRequiredService<ErrorClassifier>()));
+        services.AddSingleton<RateLimiterPolicyBuilder>(sp =>
+            new RateLimiterPolicyBuilder(sp.GetRequiredService<ResilienceEventEmitter>()));
+        services.AddSingleton<BulkheadPolicyBuilder>(sp =>
+            new BulkheadPolicyBuilder(sp.GetRequiredService<ResilienceEventEmitter>()));
         services.AddSingleton<CompositePolicyBuilder>(sp =>
             new CompositePolicyBuilder(
                 sp.GetRequiredService<RetryPolicyBuilder>(),
                 sp.GetRequiredService<CircuitPolicyBuilder>(),
-                sp.GetRequiredService<TimeoutPolicyBuilder>()));
+                sp.GetRequiredService<TimeoutPolicyBuilder>(),
+                sp.GetRequiredService<RateLimiterPolicyBuilder>(),
+                sp.GetRequiredService<BulkheadPolicyBuilder>()));
 
-        // Executor — the main entry point
+        // Executor - the main entry point
         services.AddSingleton<IResilienceExecutor>(sp =>
             new ResilienceExecutor(
                 registry: sp.GetRequiredService<IResiliencePolicyRegistry>(),
@@ -113,4 +121,9 @@ public static class ServiceCollectionExtensions
 
         return services;
     }
+
+    // Trace.TraceWarning carries a [Conditional("TRACE")] attribute, which prevents
+    // creating a delegate directly from it (CS1618). This wrapper is a plain method
+    // with no conditional attribute, so it can be passed as Action<string>.
+    private static void Warn(string message) => Trace.TraceWarning(message);
 }
