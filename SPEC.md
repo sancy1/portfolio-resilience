@@ -354,6 +354,8 @@ Nine event types. Names are **exactly** as shown (snake_case):
 | `circuit_half_opened` | Circuit transitioned Open → HalfOpen |
 | `fallback_used` | The caller-provided fallback produced a value |
 | `timeout_breached` | The timeout ceiling fired |
+| `rate_limited` | A rate limiter rejected a call (no permit, or queue full/timeout) |
+| `bulkhead_rejected` | A bulkhead rejected a call (no concurrency slot, queue full, or queue timeout) |
 
 ### 7.2 Event fields
 
@@ -567,6 +569,169 @@ The service implements a single abstract method to render the body.
 
 ---
 
+## 12. Rate limiter
+
+### 12.1 Purpose
+
+Cap how many calls may proceed in a given time period. Calls beyond the cap are
+rejected with a `ResilienceException` carrying `RejectionCategory` (default
+`Transient`), or — if a queue is configured — they wait briefly for capacity.
+
+The rate limiter is the **outermost** pipeline layer. A rejected call does not
+consume a retry slot, and a retry does not multiply the load on a rate-limited
+dependency.
+
+### 12.2 Strategies
+
+Four strategies. Each interprets `PermitLimit` and `WindowSeconds` differently:
+
+| Strategy | PermitLimit | WindowSeconds |
+|----------|-------------|---------------|
+| `TokenBucket` | Bucket capacity | Refill period (seconds) |
+| `SlidingWindow` | Max calls in any rolling window | Window size (seconds) |
+| `FixedWindow` | Max calls per fixed bucket | Bucket size (seconds) |
+| `ConcurrencyLimit` | Max simultaneous calls | Ignored |
+
+**TokenBucket.** Tokens refill continuously at rate `PermitLimit / WindowSeconds`
+per second. Each call consumes one token. The bucket holds at most
+`PermitLimit` tokens.
+
+**SlidingWindow.** At most `PermitLimit` calls may occur in any rolling
+`WindowSeconds` window. No boundary effects.
+
+**FixedWindow.** At most `PermitLimit` calls may occur per fixed `WindowSeconds`
+bucket. Buckets are aligned to the moment the first call arrived. Callers may
+observe up to `2 * PermitLimit` calls across a bucket boundary.
+
+**ConcurrencyLimit.** At most `PermitLimit` calls may be in flight
+simultaneously. No window is used; `WindowSeconds` is ignored.
+
+### 12.3 Queue behavior
+
+When a call would be rejected, the limiter may let it wait, capped by
+`QueueLimit` and `QueueTimeoutMs`.
+
+| Strategy | Queue mechanism | Ordering |
+|----------|-----------------|----------|
+| `TokenBucket` | Wait until the next token would refill | Best-effort |
+| `SlidingWindow` | Wait until the oldest call leaves the window | Best-effort |
+| `FixedWindow` | Wait until the current bucket rolls over | Best-effort |
+| `ConcurrencyLimit` | Semaphore wait with timeout | FIFO |
+
+`QueueLimit = 0` (the default) rejects immediately without queuing.
+
+### 12.4 Configuration keys
+
+Binding from `IConfiguration` (snake_case in JSON, PascalCase in C# — bound
+case-insensitively by the .NET binder):
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `enabled` | bool | `false` | When false, pass-through |
+| `strategy` | string | `SlidingWindow` | One of the four strategy names |
+| `permit_limit` | int | `100` | The limit |
+| `window_seconds` | int | `60` | Window; ignored for `ConcurrencyLimit` |
+| `queue_limit` | int | `0` | Max waiting calls; 0 rejects immediately |
+| `queue_timeout_ms` | int | `5000` | Max wait time for a queued call |
+| `rejection_category` | string | `Transient` | Error category on rejection |
+
+### 12.5 Event fields
+
+A `rate_limited` event is emitted on rejection. Fields (per §7.2 conventions):
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `event_type` | string | `"rate_limited"` |
+| `policy_name` | string | The policy name |
+| `correlation_id` | string? | From `CorrelationContext` |
+| `timestamp_utc` | ISO-8601 | UTC |
+| `metadata.strategy` | string | `TokenBucket` / `SlidingWindow` / `FixedWindow` / `ConcurrencyLimit` |
+| `metadata.permit_limit` | int | Configured `PermitLimit` |
+| `metadata.window_seconds` | int? | Omitted for `ConcurrencyLimit` |
+| `metadata.queue_limit` | int | Configured `QueueLimit` |
+| `metadata.queue_depth` | int | Queue depth at rejection; `0` when `QueueLimit = 0` |
+| `metadata.reason` | string | `rejected_immediately` / `queue_timeout` / `queue_full` |
+
+### 12.6 Error category on rejection
+
+The exception carries the policy's configured `RejectionCategory` (default
+`Transient`). The reason is always present in `metadata.reason`.
+
+### 12.7 Associated files
+
+- `src/Portfolio.Resilience/Policies/RateLimiterPolicyBuilder.cs`
+- `src/Portfolio.Resilience/Configuration/RateLimiterOptions.cs`
+- `src/Portfolio.Resilience/Configuration/RateLimitStrategy.cs`
+- `src/Portfolio.Resilience/Events/ResilienceEventType.cs` (value `RateLimited = 9`)
+
+---
+
+## 13. Bulkhead
+
+### 13.1 Purpose
+
+Cap how many calls may run concurrently against a resource. Calls beyond the cap
+may wait in a bounded queue; calls beyond the queue are rejected with a
+`ResilienceException` carrying `RejectionCategory` (default `Transient`).
+
+The bulkhead is the **second** pipeline layer, outside retry. It caps
+concurrency before the retry loop multiplies load.
+
+### 13.2 Algorithm
+
+A semaphore sized to `MaxConcurrency` gates the operation. The semaphore is held
+**across** the operation and released in a `finally` block — so slots are
+returned whether the operation succeeds, fails, or is cancelled.
+
+When the semaphore is exhausted, the caller may wait in a bounded queue:
+
+| Condition | Behavior |
+|-----------|----------|
+| A slot is free | Acquire immediately |
+| No slot, `MaxQueue = 0` | Reject with `rejected_immediately` |
+| No slot, queue has room | Wait up to `QueueTimeoutMs` |
+| No slot, queue full | Reject with `queue_full` |
+| Waited `QueueTimeoutMs`, still no slot | Reject with `queue_timeout` |
+
+Waiter ordering is FIFO (native `SemaphoreSlim` behavior).
+
+### 13.3 Configuration keys
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `enabled` | bool | `false` | When false, pass-through |
+| `max_concurrency` | int | `20` | Max simultaneous calls |
+| `max_queue` | int | `100` | Max callers that may wait |
+| `queue_timeout_ms` | int | `5000` | Max wait time for a queued caller |
+| `rejection_category` | string | `Transient` | Error category on rejection |
+
+### 13.4 Event fields
+
+A `bulkhead_rejected` event is emitted on rejection.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `event_type` | string | `"bulkhead_rejected"` |
+| `policy_name` | string | The policy name |
+| `correlation_id` | string? | From `CorrelationContext` |
+| `timestamp_utc` | ISO-8601 | UTC |
+| `metadata.max_concurrency` | int | Configured `MaxConcurrency` |
+| `metadata.max_queue` | int | Configured `MaxQueue` |
+| `metadata.queue_depth` | int | Waiters at the moment of rejection |
+| `metadata.reason` | string | `rejected_immediately` / `queue_full` / `queue_timeout` |
+
+### 13.5 Error category on rejection
+
+The exception carries the policy's configured `RejectionCategory` (default
+`Transient`). The reason is always present in `metadata.reason`.
+
+### 13.6 Associated files
+
+- `src/Portfolio.Resilience/Policies/BulkheadPolicyBuilder.cs`
+- `src/Portfolio.Resilience/Configuration/BulkheadOptions.cs`
+- `src/Portfolio.Resilience/Events/ResilienceEventType.cs` (value `BulkheadRejected = 10`)
+
+---
 ## Appendix A — Versioning
 
 This spec follows semantic versioning:
@@ -578,7 +743,7 @@ This spec follows semantic versioning:
 Every implementation's `CHANGELOG.md` **must** record which SPEC version it
 targets.
 
-**Current:** SPEC `0.5.0`. Implementations compatible with SPEC `0.5.0` must
+**Current:** SPEC `0.6.0`. Implementations compatible with SPEC `0.6.0` must
 declare it in their README.
 
 ## Appendix B — Testing requirements

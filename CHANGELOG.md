@@ -9,6 +9,106 @@ purpose:  Version history for the resilience library.
 All notable changes to `Portfolio.Resilience`. Format follows [Keep a Changelog](https://keepachangelog.com/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-09-13
+
+### Added — Rate Limiter
+
+- **`RateLimiterOptions`** — configuration model with `Enabled`, `Strategy`,
+  `PermitLimit`, `WindowSeconds`, `QueueLimit`, `QueueTimeoutMs`,
+  `RejectionCategory`, and a `Validate(string policyName)` method that returns
+  human-readable warnings for suspicious combinations.
+- **`RateLimitStrategy`** — enum for the four strategies: `TokenBucket`,
+  `SlidingWindow`, `FixedWindow`, `ConcurrencyLimit`.
+- **`RateLimiterPolicyBuilder`** — executes an operation under a rate limiter.
+  Each strategy has its own acquire path; rejections emit a `rate_limited`
+  event and throw `ResilienceException` with the configured
+  `RejectionCategory`.
+- 18 tests in `RateLimiterPolicyBuilderTests.cs` covering all four strategies,
+  queue behavior, rejection metadata, and category configuration.
+
+### Added — Bulkhead
+
+- **`BulkheadOptions`** — configuration model with `Enabled`, `MaxConcurrency`,
+  `MaxQueue`, `QueueTimeoutMs`, `RejectionCategory`, and `Validate`.
+- **`BulkheadPolicyBuilder`** — caps concurrent calls via a `SemaphoreSlim`
+  held across the operation. Excess callers wait in a bounded queue; callers
+  beyond the queue are rejected with `queue_full`.
+- 13 tests in `BulkheadPolicyBuilderTests.cs` covering the concurrency cap,
+  queue behavior, slot release on success and failure, and rejection metadata.
+
+### Added — Events and pipeline
+
+- **`ResilienceEventType.RateLimited = 9`** and
+  **`ResilienceEventType.BulkheadRejected = 10`** — new event types.
+- **`ResilienceEventEmitter.EmitRateLimited(...)`** and
+  **`EmitBulkheadRejected(...)`** — convenience emitters with the field names
+  defined in SPEC §12 and §13.
+- **`LoggingOptions.EmitRateLimited`** and **`EmitBulkheadRejected`** —
+  per-event-type toggles (both default to `true`).
+- **`CompositePolicyBuilder`** now chains
+  `RateLimiter → Bulkhead → Retry → Circuit → Timeout` and gains two optional
+  constructor parameters for the new builders. Existing construction sites are
+  unaffected.
+- **`PolicyDefinition`** gains `RateLimiter` and `Bulkhead` properties.
+
+### Added — Configuration
+
+- **`ConfigurationExtensions`** now binds `RateLimiter` and `Bulkhead`
+  sections from `IConfiguration`.
+- **`ResiliencePolicyRegistry`** validates each policy once on first resolve
+  and forwards warnings to an injected `Action<string>? warn` delegate.
+  `ServiceCollectionExtensions` routes warnings through `Trace.TraceWarning`.
+
+### Changed
+
+- **`CompositePolicyBuilder`** — pipeline order is now
+  `RateLimiter → Bulkhead → Retry → Circuit → Timeout`. When `Enabled = true`
+  is set on a policy but the corresponding builder was not provided to the
+  pipeline, execution throws `InvalidOperationException` (fail loud, not
+  silent non-enforcement).
+- **`ResilienceEventEmitter`** gains an optional `ILogSink` parameter (already
+  existed) and two new public methods.
+- **`ResiliencePolicyRegistry.Clone`** now clones `RateLimiter` and `Bulkhead`
+  options in addition to the five existing sections.
+
+### Documentation
+
+- **`docs/rate-limiter.md`** — full doc: four strategies, strategy-to-field
+  matrix, queue behavior, rejection metadata, configuration, validation
+  warnings, common mistakes, testing.
+- **`docs/bulkhead.md`** — full doc: concurrency cap, waiter queue, slot
+  release semantics, difference from rate limiting, configuration,
+  validation warnings, common mistakes, testing.
+- **`docs/README.md`** — refreshed index: all current docs listed, stale
+  `Stage D/E/F/G/H` markers removed, test count corrected.
+- **`SPEC.md`** — §7.1 event table extended with `rate_limited` and
+  `bulkhead_rejected`; new §12 (Rate limiter) and §13 (Bulkhead); version
+  bumped to `0.6.0`.
+- **`README.md`** — feature table, quick-start, pipeline diagram, comparison
+  table, roadmap, and test count all updated for v0.6.0.
+- **`docs/api-stability.md`** — new public types added; total count corrected
+  to 52; compatibility contract extended with rate limiter and bulkhead
+  clauses.
+
+### Compatibility
+
+- **No breaking changes.** All additions are additive. Existing consumers can
+  upgrade from `0.5.1` to `0.6.0` without code changes.
+- Existing policies that do not set `RateLimiter.Enabled = true` or
+  `Bulkhead.Enabled = true` see identical behavior to v0.5.1.
+
+### Known limitations
+
+- **`LoggingOptions` toggles are not yet consulted by the emitter.** The nine
+  per-event-type booleans (including the two new ones, `EmitRateLimited` and
+  `EmitBulkheadRejected`) are part of the stable public API, but every
+  configured event currently fires unconditionally. Wiring the toggles to
+  emission is a v0.7.0 item. See `docs/logging.md` for details.
+
+### Test suite
+
+- **273 tests, 0 failures, 0 warnings.** Up from 237 in v0.5.1
+  (+36 new tests: 18 rate limiter, 13 bulkhead, 5 composite integration).
 ## [0.5.1] - 2026-09-12
 
 ### Documentation

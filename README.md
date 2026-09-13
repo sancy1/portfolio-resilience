@@ -1,6 +1,6 @@
 ﻿<!--
 filepath: README.md
-package:  Portfolio.Resilience | since: v0.5.0
+package:  Portfolio.Resilience | since: v0.6.0
 purpose:  Main project README — install, quick-start, feature overview, and links.
 -->
 
@@ -8,16 +8,17 @@ purpose:  Main project README — install, quick-start, feature overview, and li
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET](https://img.shields.io/badge/.NET-10.0-purple.svg)](https://dotnet.microsoft.com/)
-[![Tests](https://img.shields.io/badge/tests-237%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-273%20passing-brightgreen.svg)](#)
 [![NuGet](https://img.shields.io/badge/nuget-Portfolio.Resilience-blue.svg)](https://www.nuget.org/packages/Portfolio.Resilience)
 
-> **Resilience primitives for .NET.** Retry, circuit breaker, timeout, fallback,
-> correlation, structured logging, and latency metrics — in one small library
-> with a cross-language spec.
+> **Resilience primitives for .NET.** Rate limiter, bulkhead, retry, circuit
+> breaker, timeout, fallback, correlation, structured logging, and latency
+> metrics — in one small library with a cross-language spec.
 
 Built for microservice architectures where every HTTP call, database query, and
-cache lookup can fail transiently. Instead of hand-rolling retry logic in each
-service (differently, each time), call one method:
+cache lookup can fail transiently — or overwhelm a dependency if it does not.
+Instead of hand-rolling retry logic in each service (differently, each time),
+call one method:
 
     var user = await _resilience.ExecuteAsync(
         "auth-service",
@@ -37,29 +38,33 @@ database. Without protection:
 
 - Every transient failure becomes a user-visible error.
 - A single slow dependency exhausts your thread pool.
+- A burst of traffic slams a rate-limited dependency.
 - The circuit between "the network was busy" and "the user saw an error" is lost.
 
 With `Portfolio.Resilience`, every outbound call goes through a battle-tested
 pipeline:
 
-    Caller -> Retry -> Circuit Breaker -> Timeout -> Operation
+    Caller -> RateLimiter -> Bulkhead -> Retry -> Circuit Breaker -> Timeout -> Operation
 
 Each layer does one thing:
 
 | Layer | Responsibility | Docs |
 |-------|---------------|------|
+| **Rate Limiter** | Caps how many calls may proceed per time period | [rate-limiter.md](docs/rate-limiter.md) |
+| **Bulkhead** | Caps how many calls may run concurrently | [bulkhead.md](docs/bulkhead.md) |
 | **Retry** | Absorbs transient failures with exponential backoff + jitter | [retry.md](docs/retry.md) |
 | **Circuit Breaker** | Fails fast when a dependency is genuinely broken | [circuit-breaker.md](docs/circuit-breaker.md) |
 | **Timeout** | Bounds every attempt | [timeout.md](docs/timeout.md) |
 | **Executor** | Coordinates the pipeline + fallback + observability | [executor.md](docs/executor.md) |
 
-And two cross-cutting concerns:
+And three cross-cutting concerns:
 
 | Concern | What it gives you | Docs |
 |---------|------------------|------|
 | **Structured Logging** | One JSON event per pipeline decision, sink-swappable | [logging.md](docs/logging.md) |
 | **Metrics** | p50/p95/p99, error rate, in-flight counts, per policy | [metrics.md](docs/metrics.md) |
 | **Correlation** | One ID across every service in a request trace | [correlation.md](docs/correlation.md) |
+
 ---
 
 ## Install
@@ -87,10 +92,21 @@ Requires **.NET 10** or later. No other dependencies.
             p.Circuit.OpenDurationSeconds  = 30;
             p.Timeout.TimeoutMs            = 5000;
         })
-        .AddPolicy("notification-service", p =>
+        .AddPolicy("external-api", p =>
         {
-            p.Retry.MaxAttempts  = 5;
-            p.Timeout.TimeoutMs  = 30000;
+            // Rate limit: at most 100 calls per minute
+            p.RateLimiter.Enabled            = true;
+            p.RateLimiter.Strategy           = RateLimitStrategy.SlidingWindow;
+            p.RateLimiter.PermitLimit        = 100;
+            p.RateLimiter.WindowSeconds      = 60;
+
+            // Bulkhead: at most 20 in flight, queue up to 10 more
+            p.Bulkhead.Enabled               = true;
+            p.Bulkhead.MaxConcurrency        = 20;
+            p.Bulkhead.MaxQueue              = 10;
+            p.Bulkhead.QueueTimeoutMs        = 2000;
+
+            p.Timeout.TimeoutMs              = 10000;
         }));
 
 ### 2. Inject the executor
@@ -122,8 +138,9 @@ Requires **.NET 10** or later. No other dependencies.
             ct: ct);
     }
 
-That is the **entire integration** for a call site. Retry, circuit breaker,
-timeout, logging, metrics, and correlation all happen inside `ExecuteAsync`.
+That is the **entire integration** for a call site. Rate limiting, bulkhead
+isolation, retry, circuit breaking, timeout, logging, metrics, and correlation
+all happen inside `ExecuteAsync`.
 
 ### Logging scenarios
 
@@ -160,7 +177,7 @@ provider, or nowhere at all is your choice at registration time.
 
     builder.Services.AddPortfolioResilience(r => r
         .AddPolicy("auth-service", p => { /* ... */ }));
-    // No AddLogSink call → NullLogSink (silent default)
+    // No AddLogSink call — NullLogSink (silent default)
 
 **How the choice is made:**
 
@@ -194,9 +211,36 @@ Then use `HttpClient` normally. Every request goes through the pipeline for the
 `auth-service` policy.
 
 See [http-integration.md](docs/http-integration.md) for the full story.
+
 ---
 
 ## Features
+
+### Rate limiter
+
+Caps how many calls may proceed in a given time period. Four strategies:
+
+    TokenBucket    - smooth refill, allows bursts up to capacity
+    SlidingWindow  - precise; no boundary effects (default)
+    FixedWindow    - cheapest; allows 2x burst at boundaries
+    ConcurrencyLimit - caps simultaneous calls instead of rate
+
+Rejections are fast and local — the dependency never sees the request. Each
+rejection emits a `rate_limited` event with strategy, permit limit, queue depth,
+and reason.
+
+### Bulkhead
+
+Caps how many calls may run concurrently against a resource. Prevents thread
+pool exhaustion when a dependency slows down.
+
+    Caller -> Bulkhead (MaxConcurrency = 20) -> operation
+                    |
+                    +-- additional callers wait up to QueueTimeoutMs (bounded by MaxQueue)
+                    +-- beyond that: rejected with bulkhead_rejected
+
+The semaphore is held across the operation and released in a `finally` block,
+so slots return on success, failure, or cancellation.
 
 ### Retry
 
@@ -281,15 +325,19 @@ See [error-classification.md](docs/error-classification.md).
       |
       +-- IResilienceExecutor         <-- the entry point
             |
-            +-- RetryPolicyBuilder         (outermost)
+            +-- RateLimiterPolicyBuilder    (outermost)
                   |
-                  +-- CircuitPolicyBuilder (middle)
+                  +-- BulkheadPolicyBuilder
                         |
-                        +-- TimeoutPolicyBuilder (innermost)
+                        +-- RetryPolicyBuilder
                               |
-                              +-- your operation
+                              +-- CircuitPolicyBuilder
                                     |
-                                    +-- HttpClient / EF Core / Redis / ...
+                                    +-- TimeoutPolicyBuilder (innermost)
+                                          |
+                                          +-- your operation
+                                                |
+                                                +-- HttpClient / EF Core / Redis / ...
 
 Two side channels:
 
@@ -313,17 +361,17 @@ library is **not a Polly replacement.** It has a different design center.
 | Circuit breaker | ✅ | ✅ | ✅ |
 | Timeout per attempt | ✅ | ✅ | ✅ |
 | Fallback | ✅ | ✅ | ✅ |
-| **Rate limiter** | ⏳ v0.6.0 | ✅ | ✅ |
-| **Bulkhead isolation** | ⏳ v0.6.0 | ✅ | ✅ |
-| **Hedging** | ⏳ v0.7.0 | ✅ | ✅ |
-| **Policy composition (Wrap)** | ⏳ v0.7.0 | ✅ | ✅ |
+| **Rate limiter** | ✅ **v0.6.0** | ✅ | ✅ |
+| **Bulkhead isolation** | ✅ **v0.6.0** | ✅ | ✅ |
+| **Hedging** | 🔜 v0.7.0 | ✅ | ✅ |
+| **Policy composition (Wrap)** | 🔜 v0.7.0 | ✅ | ✅ |
 | **Chaos engineering (Simmy)** | ❌ | ✅ | ❌ |
-| **OpenTelemetry integration** | ⏳ v0.7.0 | ✅ | ✅ |
-| **Built-in cloud sinks** | ⏳ v0.8.0 | ecosystem | ecosystem |
+| **OpenTelemetry integration** | 🔜 v0.7.0 | ✅ | ✅ |
+| **Built-in cloud sinks** | 🔜 v0.8.0 | ecosystem | ecosystem |
 | **Ambient correlation IDs** | ✅ **built-in** | manual | partial |
 | **Structured event schema (cross-language)** | ✅ **SPEC.md** | manual | no |
 | **Latency percentiles built-in** | ✅ **no OTel required** | OTel only | OTel only |
-| **Zero external dependencies** | ✅ | ✅ | ❌ (Polly) |
+| **Zero external dependencies** | ✅ | ✅ | ✅ (Polly) |
 | .NET 10 target | ✅ | ✅ | ✅ |
 | Ecosystem maturity | new | 200M+ downloads | Microsoft-backed |
 
@@ -336,8 +384,8 @@ Three design decisions that Polly deliberately leaves to the consumer:
    propagates across services. With Polly you wire this yourself.
 
 2. **Structured events have a cross-language contract.** `SPEC.md` defines every
-   event name (`retry_attempted`, `circuit_opened`, etc.), every field name
-   (`policy_name`, `attempt`, `duration_ms`), every metric name (`p50_ms`,
+   event name (`retry_attempted`, `circuit_opened`, `rate_limited`, etc.), every
+   field name (`policy_name`, `attempt`, `duration_ms`), every metric name (`p50_ms`,
    `error_rate`), and every error category. A future Python or Go implementation
    produces **identical output**, so dashboards work across languages.
 
@@ -349,7 +397,7 @@ Three design decisions that Polly deliberately leaves to the consumer:
 ### When to choose Polly / MS.Extensions.Resilience
 
 - You want the industry standard.
-- You need rate limiting, hedging, or bulkhead isolation **today**.
+- You need hedging, chaos engineering, or policy composition **today**.
 - You're already invested in the Polly / OpenTelemetry ecosystem.
 - You want the widest ecosystem of plugins and community support.
 
@@ -368,6 +416,7 @@ Yes — they operate at different layers. Some teams use Polly for the fine-grai
 HTTP client pipeline and Portfolio.Resilience for the higher-level operation
 pipeline (database calls, Redis, cross-service business operations). Neither
 library knows or cares about the other.
+
 ---
 
 ## Documentation
@@ -384,6 +433,8 @@ Full documentation lives in [`docs/`](docs/):
 | [docs/retry.md](docs/retry.md) | Backoff formula and tuning |
 | [docs/timeout.md](docs/timeout.md) | Ceiling semantics |
 | [docs/circuit-breaker.md](docs/circuit-breaker.md) | State machine |
+| [docs/rate-limiter.md](docs/rate-limiter.md) | Four strategies, queue behavior |
+| [docs/bulkhead.md](docs/bulkhead.md) | Concurrency cap, waiter queue |
 | [docs/executor.md](docs/executor.md) | The pipeline entry point |
 | [docs/http-integration.md](docs/http-integration.md) | DelegatingHandler setup |
 | [docs/api-stability.md](docs/api-stability.md) | Frozen public API |
@@ -392,37 +443,40 @@ Full documentation lives in [`docs/`](docs/):
 ## Repository structure
 
     resilience/
-    ├── README.md                     ← you are here
-    ├── SPEC.md                       ← the cross-language contract
-    ├── CHANGELOG.md                  ← version history
-    ├── VERSION                       ← current version
-    ├── LICENSE                       ← MIT
-    ├── docs/                         ← per-concern documentation
-    │   ├── README.md
-    │   ├── correlation.md
-    │   ├── logging.md
-    │   ├── metrics.md
-    │   ├── error-classification.md
-    │   ├── retry.md
-    │   ├── timeout.md
-    │   ├── circuit-breaker.md
-    │   ├── executor.md
-    │   ├── http-integration.md
-    │   └── api-stability.md
-    └── dotnet/
-        ├── src/Portfolio.Resilience/     ← the library source
-        ├── tests/Portfolio.Resilience.Tests/  ← 237 tests
-        └── Portfolio.Resilience.slnx
+    +-- README.md                     - you are here
+    +-- SPEC.md                       - the cross-language contract
+    +-- CHANGELOG.md                  - version history
+    +-- VERSION                       - current version
+    +-- LICENSE                       - MIT
+    +-- docs/                         - per-concern documentation
+        +-- README.md
+        +-- correlation.md
+        +-- logging.md
+        +-- metrics.md
+        +-- error-classification.md
+        +-- retry.md
+        +-- timeout.md
+        +-- circuit-breaker.md
+        +-- rate-limiter.md
+        +-- bulkhead.md
+        +-- executor.md
+        +-- http-integration.md
+        +-- api-stability.md
+    +-- dotnet/
+        +-- src/Portfolio.Resilience/         - the library source
+        +-- tests/Portfolio.Resilience.Tests/ - 273 tests
+        +-- Portfolio.Resilience.slnx
 
 ## Test suite
 
-237 tests, 0 failures, 0 warnings. Run them with:
+273 tests, 0 failures, 0 warnings. Run them with:
 
     cd dotnet
     dotnet test Portfolio.Resilience.slnx
 
 Coverage spans every sink, the correlation primitive, the error classifier,
-each policy builder, the executor, and the HTTP handler.
+each policy builder (retry, timeout, circuit, rate limiter, bulkhead), the
+composite pipeline, the registry, the executor, and the HTTP handler.
 
 ## Design principles
 
@@ -430,15 +484,17 @@ each policy builder, the executor, and the HTTP handler.
    implementations. No divergent failure semantics.
 
 2. **Share the engine, own the interface.** The library shares mechanics
-   (retry, circuit, timeout, correlation, event schema). Each service owns its
-   HTTP response envelope. See [SPEC.md §11](SPEC.md).
+   (rate limiting, bulkhead, retry, circuit, timeout, correlation, event schema).
+   Each service owns its HTTP response envelope. See [SPEC.md §11](SPEC.md).
 
 3. **Ambient where it helps, injected where it matters.** Correlation IDs are
    ambient (`AsyncLocal`). The DI adapter exists for testability.
 
 4. **Never crash the caller.** A broken log sink, a metric recorder that
    throws, a classifier that fails — none of these should take down the
-   pipeline.
+   pipeline. Configuration errors, however, **do** fail loud: enabling a
+   feature without wiring its builder throws `InvalidOperationException` on
+   first call, not silent non-enforcement.
 
 5. **Contracts before implementations.** The cross-language SPEC was written
    before the .NET implementation. A future Python implementation follows the
@@ -452,25 +508,21 @@ Priority is driven by (1) what users need most and (2) closing the feature gap
 with Polly. Everything below is tracked in the repo's issues and planned in
 this order.
 
-### v0.5.x — Current line
+### v0.6.0 — Current line ✅ Released
 
-| Version | Status | What it adds |
-|---------|--------|--------------|
-| `v0.5.0` | ✅ **Released** | First public release. Retry, circuit breaker, timeout, fallback, correlation, structured logging, metrics. |
-| `v0.5.1` | Planned | Documentation improvements, more examples. |
-
-### v0.6.0 — Rate Limiting and Bulkhead
-
-| Feature | Why it matters |
-|---------|---------------|
-| **Rate limiter** | Prevent hammering a dependency. Token-bucket + sliding-window. |
-| **Bulkhead isolation** | Cap concurrent calls to a resource. Prevents thread pool exhaustion. |
+| Feature | Status |
+|---------|--------|
+| **Rate limiter** | ✅ Released — TokenBucket, SlidingWindow, FixedWindow, ConcurrencyLimit |
+| **Bulkhead isolation** | ✅ Released — concurrency cap with bounded waiter queue |
+| **Ambient correlation IDs** | ✅ Since v0.2.0 |
+| **Structured logging** | ✅ Since v0.2.0 |
+| **Latency metrics** | ✅ Since v0.2.0 |
 
 ### v0.7.0 — Composition and Observability
 
 | Feature | Why it matters |
 |---------|---------------|
-| **Policy composition (Wrap)** | Build custom pipeline orders instead of the hard-coded `retry → circuit → timeout`. |
+| **Policy composition (Wrap)** | Build custom pipeline orders instead of the fixed chain. |
 | **Hedging** | Parallel requests for latency-sensitive reads. |
 | **OpenTelemetry integration** | Native OTel exporter for events and metrics. |
 | **Roslyn analyzer** | Warn when `HttpClient.SendAsync` bypasses the wrapper. |
