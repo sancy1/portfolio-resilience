@@ -252,3 +252,182 @@ Verified by `tests/Portfolio.Resilience.Tests/TimeoutPolicyBuilderTests.cs` (8 t
 - [http-integration.md](http-integration.md) — the three-layer timeout interaction
 - [executor.md](executor.md) — where timeout sits in the pipeline
 - [../SPEC.md](../SPEC.md) §Timeout — the normative semantics
+
+## How to use it — a worked walkthrough
+
+This section walks through adding a timeout to a real call site, one step at
+a time. It assumes you already call operations through `IResilienceExecutor`
+(or `ResilientHttpMessageHandler`). If you do not, see
+[executor.md](executor.md) first.
+
+### Step 1 — Decide what to protect
+
+Suppose you have an HTTP call to an external pricing service. The service is
+usually fast (100–200ms) but occasionally slow (2–5s). The call site currently
+looks like this:
+
+    var price = await _http.GetFromJsonAsync<Price>($"/api/v1/prices/{sku}", ct);
+
+There is no ceiling. If the pricing service hangs, this call hangs. The
+thread stays occupied. Under load, this cascades.
+
+**The operation to protect is the `GetFromJsonAsync` call.**
+
+### Step 2 — Register a policy for that dependency
+
+In `Program.cs`, register a policy that matches the pricing service's
+behavior:
+
+    builder.Services.AddPortfolioResilience(r => r
+        .AddPolicy("pricing-service", p =>
+        {
+            p.Timeout.TimeoutMs = 3000;   // 3 seconds — well above p99, still bounded
+            p.Retry.MaxAttempts = 2;      // retry transient failures
+            p.Retry.BaseDelayMs = 200;
+        }));
+
+**Why 3000ms?** The service is normally fast. A 3-second ceiling is generous
+enough that it rarely fires, but low enough that a hung call is killed
+before it spreads. **The ceiling is a signal, not a target.** If it fires
+often, the dependency is unhealthy — the fix is to fix the dependency, not
+raise the ceiling.
+
+### Step 3 — Wrap the call site
+
+Replace the direct HTTP call with one through `IResilienceExecutor`:
+
+    public sealed class PricingClient
+    {
+        private readonly HttpClient _http;
+        private readonly IResilienceExecutor _resilience;
+
+        public PricingClient(
+            HttpClient http,
+            IResilienceExecutor resilience)
+        {
+            _http = http;
+            _resilience = resilience;
+        }
+
+        public Task<Price?> GetPriceAsync(string sku, CancellationToken ct)
+        {
+            return _resilience.ExecuteAsync(
+                "pricing-service",
+                token => _http.GetFromJsonAsync<Price>(
+                    $"/api/v1/prices/{sku}", token),
+                ct: ct);
+        }
+    }
+
+**What changed:**
+
+- The `HttpClient` call now runs inside `ExecuteAsync`.
+- The **caller's `ct`** is passed through to `ExecuteAsync` — this is what
+  distinguishes "the caller gave up" from "our ceiling fired." If you drop
+  the `ct`, a user-closed browser tab becomes indistinguishable from a slow
+  service, and the timeout policy may retry work nobody wants.
+- The `token` inside the lambda is the **linked** token — it fires when
+  either the caller's `ct` fires OR our 3000ms timer fires.
+
+### Step 4 — Understand what happens on each outcome
+
+Given `TimeoutMs = 3000`, `MaxAttempts = 2`, `BaseDelayMs = 200`, four
+outcomes are possible:
+
+| Outcome | What the caller sees |
+|---------|---------------------|
+| Pricing service replies in 150ms | `Price` object — no timeout involved |
+| Pricing service takes 3.5s | After 3s, the ceiling fires → `ResilienceException(Timeout)`. Retry sleeps 200ms, then tries again — a **fresh 3-second window** |
+| Pricing service hangs indefinitely | Same as above, but every attempt burns its full 3s. Worst case: 3 attempts × 3s + 2 × 200ms backoff = **~9.4s total**, then `ResilienceException(Timeout)` |
+| Caller cancels the request (user closes tab) | `OperationCanceledException` — NOT a `ResilienceException`. No retry, no circuit count, no ops alert |
+
+**The fourth outcome is the important one.** Timeout correctly separates
+"caller chose to stop" from "our ceiling fired." If it did not, a user
+closing a browser tab would trigger retries against a healthy service.
+
+### Step 5 — Tune based on observed behavior
+
+Once this is running in production, watch two signals:
+
+- **`timeout_breached` events in your `ILogSink`** — how often is the ceiling
+  firing?
+- **`LatencySnapshot.P99Ms` from `ILatencyTracker`** — where is the actual
+  p99?
+
+If the ceiling fires under 0.1% of calls, the value is fine. If it fires
+often (say >1%), the dependency is genuinely slow. Two options:
+
+1. **Fix the dependency** (the right answer).
+2. **Raise the ceiling** (the wrong answer, unless the dependency's true p99
+   has changed and the current ceiling is now below it).
+
+**Never raise the ceiling just to make the warnings stop.** That removes the
+signal but not the problem.
+
+### Step 6 — Coordinate with the outer HTTP timeout
+
+If your service is behind nginx, an ALB, or Kestrel, there is a third ceiling
+in the path — the whole-request timeout. Its value must be **larger than the
+worst-case time of the pipeline**, or the outer timeout fires before our
+policy produces its structured exception.
+
+For the pricing example above, the pipeline worst case is ~9.4s. A 15-second
+outer timeout leaves comfortable headroom.
+
+For `HttpClient` itself (when used inside the pipeline), set
+`HttpClient.Timeout` **larger** than `TimeoutMs × (MaxAttempts + 1)`:
+
+    builder.Services
+        .AddHttpClient("pricing-service", c =>
+        {
+            c.BaseAddress = new Uri("https://pricing.example.com");
+            c.Timeout = TimeSpan.FromSeconds(15);   // outer ceiling
+        })
+        .AddResilientHandler("pricing-service");
+
+    // policy: TimeoutMs = 3000, MaxAttempts = 2
+    // worst case: 3 × 3s + backoff ~= 9.4s → safely under 15s
+
+### Step 7 — What a `Timeout` failure looks like to the caller
+
+If the ceiling does fire and all retries are exhausted, the caller catches:
+
+    try
+    {
+        var price = await _pricing.GetPriceAsync(sku, ct);
+        return price;
+    }
+    catch (ResilienceException ex) when (ex.Category == ResilienceErrorCategory.Timeout)
+    {
+        // We can tell the difference between "the caller cancelled" and
+        // "our policy gave up." Here, the policy gave up.
+        _logger.LogWarning(
+            "Pricing lookup for {Sku} exceeded its budget. Attempts: {Attempts}, elapsed: {Elapsed}ms",
+            sku, ex.AttemptsMade, ex.TotalDuration.TotalMilliseconds);
+
+        throw new PricingUnavailableException(sku, ex);
+    }
+
+The exception carries:
+
+- `Category = Timeout` — a specific category, not `Transient`.
+- `AttemptsMade` — how many attempts actually ran before the ceiling fired.
+- `TotalDuration` — wall time from first attempt to final failure.
+- `Metadata["timeout_ms"]` — the configured ceiling.
+- `Metadata["elapsed_ms"]` — how long the operation actually ran.
+
+**This is why the timeout policy uses a distinct category.** A caller can
+differentiate between "retry eventually won" (no exception), "retry exhausted
+on a real error" (`Transient` / `Permanent` / etc.), and "our ceiling fired"
+(`Timeout`). The last case is usually an operational issue, not a code bug.
+
+### A note on what NOT to do
+
+**Do not disable the timeout for convenience.** The pattern "`TimeoutMs = 0`
+because I do not want failures in development" ships to production. In
+production, the same missing ceiling that made dev easier becomes the
+cascading failure you were trying to prevent.
+
+If you need a longer ceiling in a specific environment, set a value — do not
+remove the ceiling entirely.
+

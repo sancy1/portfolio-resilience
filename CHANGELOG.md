@@ -9,6 +9,90 @@ purpose:  Version history for the resilience library.
 All notable changes to `Portfolio.Resilience`. Format follows [Keep a Changelog](https://keepachangelog.com/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-09-14
+
+### Added — Policy Composition
+
+- **`IResiliencePolicy`** (`Abstractions/`) — a single interface that every policy builder implements. Enables custom pipeline composition.
+- **`ResiliencePipeline`** (`Policies/`) — an ordered sequence of `IResiliencePolicy` layers, executed outermost-first. Constructed via `ResiliencePipeline.Wrap(...)` or the constructor.
+- **`ResiliencePipelineBuilder`** (`Policies/`) — fluent builder (`Add`, `AddIf`, `WithName`, `Build`) for constructing a pipeline with conditionals.
+- `RetryPolicyBuilder`, `CircuitPolicyBuilder`, `TimeoutPolicyBuilder`, `RateLimiterPolicyBuilder`, and `BulkheadPolicyBuilder` now implement `IResiliencePolicy`.
+
+### Added — OpenTelemetry integration
+
+- **New NuGet package: `Portfolio.Resilience.OpenTelemetry`** — optional package that exports resilience events and metrics via OpenTelemetry.
+- **`OpenTelemetryLogSink`** — maps every `ResilienceEvent` to an OTel log record with structured `resilience.*` attributes.
+- **`OpenTelemetryMetricSink`** — maps `IMetricSink.RecordCall` to OTel histogram `resilience.call.duration_ms` and counters `resilience.call.succeeded_total` / `resilience.call.failed_total`.
+- **`OpenTelemetryBuilderExtensions`** — one-line registration: `services.AddPortfolioResilienceOpenTelemetry()`.
+- The order-independent composition pattern allows calling `AddPortfolioResilienceOpenTelemetry()` before or after `AddPortfolioResilience(...)`.
+- Dependency on `OpenTelemetry.Api` 1.15.3 (patched version; earlier 1.11.0 was vulnerable per GHSA-8785-wc3w-h8q6 and GHSA-g94r-2vxg-569j).
+
+### Added — Hedging
+
+- **`HedgingOptions`** (`Configuration/`) — 8 fields: `Enabled`, `MaxAttempts`, `DelayMs`, `ExponentialBackoff`, `AttemptTimeoutMs`, `CancelOnSuccess`, `EmitAttemptEvents`, `RejectionCategory`. Includes a `Validate(string policyName)` method.
+- **`HedgingPolicyBuilder`** (`Policies/`) — fires parallel attempts with a stagger delay; the first success wins. Hedges only fire if no prior attempt has already succeeded.
+- **Three new event types**: `ResilienceEventType.HedgeWon = 11`, `HedgeLost = 12`, `HedgeCancelled = 13`.
+- **`LoggingOptions.EmitHedgeEvents`** — one toggle for all three hedge events (default: `true`).
+- **`PolicyDefinition.Hedging`** — new property.
+- **`ResilienceEventEmitter.EmitHedgeWon/EmitHedgeLost/EmitHedgeCancelled`** — three new convenience emitters.
+- **Safety:** hedging is not safe for non-idempotent operations unless the downstream deduplicates on an idempotency key. Documented in `docs/hedging.md` with a prominent warning. A startup warning is logged once per policy that enables hedging.
+
+### Added — Standard handler
+
+- **`HttpClientBuilderExtensions.AddStandardResilienceHandler(Action<PolicyDefinition>? configure = null)`** — registers a `"standard"` policy with sensible defaults (retry + circuit + timeout; rate limiter, bulkhead, and hedging off) and wires every request through it.
+- **`StandardPolicy`** (`Configuration/`) — the built-in policy definition (`Name = "standard"`) used by the handler.
+- **User overrides win.** If a caller registers their own `"standard"` policy via `AddPolicy`, the extension does not overwrite it.
+- **Order-independent.** Registering the handler before or after `AddPortfolioResilience` both work; the post-configure pattern resolves the policy at container-build time.
+
+### Added — Roslyn analyzers
+
+- **New NuGet package: `Portfolio.Resilience.Analyzers`** — optional package that ships two compile-time analyzers.
+- **PR0001 — `HttpClientBypassAnalyzer`** — warns when a class obtains an `HttpClient` from `IHttpClientFactory` and calls it directly without going through the resilience pipeline. Includes an `IResilienceExecutor` guard to prevent false positives.
+- **PR0002 — `MisconfigurationAnalyzer`** — warns when an `AddPolicy` lambda enables a feature (`RateLimiter`, `Bulkhead`, `Hedging`) but sets its companion value to `0` or negative, or sets `Timeout.TimeoutMs` / `Retry.MaxAttempts` to a negative value.
+- Both rules are enabled by default and suppressible via `#pragma warning disable` or `.editorconfig`.
+- The analyzer project targets `netstandard2.0` (required for Roslyn analyzers) and ships with `<EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>`.
+
+### Changed
+
+- **`CompositePolicyBuilder`** — pipeline is now assembled by composing `IResiliencePolicy` layers via `ResiliencePipeline`. The default order remains `RateLimiter -> Bulkhead -> Retry -> Circuit -> Timeout`. Behavior is byte-for-byte identical to v0.6.x; only the internal mechanism changed.
+- **`ServiceCollectionExtensions.AddPortfolioResilience`** — the `IResiliencePolicyRegistry` registration now applies all registered `Action<ResilienceOptions>` singletons before constructing the registry. This enables post-registration policy injection by extension packages (such as `AddStandardResilienceHandler`).
+- **`ConfigurationExtensions.LoadFromConfiguration`** — binds the new `Hedging` section.
+
+### Fixed
+
+- **Hedging deadlock** — `HedgingPolicyBuilder.WaitForFirstSuccessOrAllFailAsync` could deadlock when one hedged attempt succeeded while another was pending indefinitely. Fixed by checking for already-completed winners before awaiting the pending set.
+- **Hedging duplicate-fire** — the initial implementation fired all attempts unconditionally. Now each hedge fires only if no prior attempt has succeeded within its stagger delay.
+- **Hedging per-attempt timeout** — `HedgingOptions.AttemptTimeoutMs` was silently ignored in an early iteration. Now honored via a linked `CancellationTokenSource` per attempt.
+- **`OpenTelemetryLogSink` event filtering** — the sink no longer short-circuits on `ILogger.IsEnabled`. Filtering is the logger pipeline's responsibility. `call_started` maps to `Debug` (was `Trace`, which is filtered by most loggers).
+- **Security** — `OpenTelemetry.Api` bumped from `1.11.0` (two advisories) to `1.15.3`.
+
+### Documentation
+
+- **New:** `docs/composition.md` — pipeline composition, both `Wrap` and builder styles, real-world patterns, custom layers.
+- **New:** `docs/hedging.md` — hedging semantics with a prominent non-idempotency safety section.
+- **New:** `docs/opentelemetry.md` — the OTel package's sinks, attribute mappings, one-liner registration.
+- **New:** `docs/analyzers.md` — the analyzer package, PR0001 and PR0002 walkthroughs, `.editorconfig` examples, troubleshooting.
+- **Updated:** `docs/timeout.md`, `docs/metrics.md`, `docs/error-classification.md` — appended "How to use it — a worked walkthrough" sections.
+- **Updated:** `docs/metrics.md` — removed a duplicated `## Test coverage` section; corrected stale "Stage C/E/F/H" references.
+- **Updated:** `docs/http-integration.md` — new section on `AddStandardResilienceHandler()`.
+- **Updated:** `docs/README.md`, `docs/api-stability.md`, `README.md` — new doc and feature entries.
+- **Updated:** `SPEC.md` — new §14 (Policy composition), §15 (OpenTelemetry integration), §16 (Hedging), §17 (Analyzers).
+
+### Compatibility
+
+- **No breaking changes.** All additions are additive. Existing consumers can upgrade from `0.6.x` to `0.7.0` without code changes.
+- The `ResilienceEventType` enum gains values `11`, `12`, and `13`. Existing numeric values `0`–`10` are unchanged.
+- The `PolicyDefinition` class gains a `Hedging` property. Existing code that does not use it is unaffected.
+- `CompositePolicyBuilder`'s constructor gains an optional `HedgingPolicyBuilder? hedging = null` parameter. Existing construction sites are unaffected.
+- Existing policies that do not set `Hedging.Enabled = true` behave exactly as in `0.6.x`.
+
+### Known limitations
+
+- **`LoggingOptions` toggles are not yet consulted by the emitter** — this is unchanged from `0.6.0`. Wiring the toggles to emission is a future item.
+
+### Test suite
+
+- **417 tests, 0 failures, 0 warnings.** Up from 391 in v0.6.1 (+26: composition, hedging, standard handler, analyzers, and end-to-end integration tests).
 ## [0.6.1] - 2026-09-13
 
 ### Documentation

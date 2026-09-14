@@ -732,6 +732,342 @@ The exception carries the policy's configured `RejectionCategory` (default
 - `src/Portfolio.Resilience/Events/ResilienceEventType.cs` (value `BulkheadRejected = 10`)
 
 ---
+## 14. Policy composition
+
+### 14.1 Purpose
+
+Build a resilience pipeline in any order, from any subset of available layers.
+Where the default pipeline is fixed at
+
+    RateLimiter -> Bulkhead -> Retry -> Circuit -> Timeout -> Operation
+
+composition lets a caller choose. Every policy builder implements
+`IResiliencePolicy`, and a `ResiliencePipeline` executes an ordered list of
+layers outermost-first.
+
+### 14.2 The `IResiliencePolicy` interface
+
+    Task<T> ExecuteAsync<T>(
+        string policyName,
+        Func<CancellationToken, Task<T>> operation,
+        PolicyDefinition definition,
+        CancellationToken ct = default);
+
+Implementations:
+
+- Read their own options from `definition`.
+- Pass through to `operation` without behavior when disabled.
+- Must be thread-safe.
+
+### 14.3 `ResiliencePipeline`
+
+- Constructed from an ordered array of `IResiliencePolicy`.
+- Executes outermost-first: `Wrap(A, B, C)` produces `A -> B -> C -> operation`.
+- Immutable after construction. Thread-safe.
+- Exposes `Layers` as a read-only view.
+- `Wrap(...)` is the factory name; it is identical to the constructor.
+
+### 14.4 `ResiliencePipelineBuilder`
+
+- Fluent, mutable builder for a `ResiliencePipeline`.
+- Methods: `WithName(string)`, `Add(IResiliencePolicy)`,
+  `AddIf(bool, IResiliencePolicy)`, `Build()`.
+- Not thread-safe. Build once, share the resulting pipeline.
+- `Build()` throws `InvalidOperationException` when no layers have been added.
+
+### 14.5 Relationship to `CompositePolicyBuilder`
+
+`CompositePolicyBuilder` retains the default pipeline order for compatibility
+and continues to **fail loud** when a policy enables a feature whose builder
+was not provided. Internally it composes the layer list and delegates to
+`ResiliencePipeline`.
+
+`ResiliencePipeline` itself does **not** validate that all features enabled in
+the definition are present in the pipeline. A layer that is not in the
+pipeline is not executed — this is the documented behavior of the pipeline
+container.
+
+### 14.6 Custom layers
+
+Any type implementing `IResiliencePolicy` may be composed. The library
+imposes no minimum interface beyond what is defined in §14.2. Custom layers
+should honor the caller's `CancellationToken` and must not call
+`operation` more than once.
+
+### 14.7 Associated files
+
+- `src/Portfolio.Resilience/Abstractions/IResiliencePolicy.cs`
+- `src/Portfolio.Resilience/Policies/ResiliencePipeline.cs`
+- `src/Portfolio.Resilience/Policies/ResiliencePipelineBuilder.cs`
+- `src/Portfolio.Resilience/Policies/CompositePolicyBuilder.cs`
+
+---
+## 15. OpenTelemetry integration
+
+### 15.1 Purpose
+
+Export resilience events and metrics as native OpenTelemetry telemetry. The
+integration is optional: the core library remains zero-dependency, and the
+OTel sinks live in a separate package, `Portfolio.Resilience.OpenTelemetry`.
+
+### 15.2 Log sink
+
+`OpenTelemetryLogSink` implements `ILogSink`. It emits one OTel log record per
+`ResilienceEvent`.
+
+**Attribute names** (all prefixed `resilience.`):
+
+| Attribute | Source field | When present |
+|-----------|--------------|--------------|
+| `resilience.event_type` | `EventType` (snake_case) | Always |
+| `resilience.policy_name` | `PolicyName` | Always |
+| `resilience.timestamp_utc` | `TimestampUtc` | Always |
+| `resilience.correlation_id` | `CorrelationId` | When non-null |
+| `resilience.attempt` | `Attempt` | When non-null |
+| `resilience.duration_ms` | `DurationMs` | When non-null |
+| `resilience.error_category` | `ErrorCategory` | When non-null |
+| `resilience.error_message` | `ErrorMessage` | When non-null |
+| `resilience.error_type` | `ErrorType` | When non-null |
+| `resilience.metadata.<key>` | `Metadata[key]` | One per entry |
+
+**Log level mapping:**
+
+| Event type | Log level |
+|------------|-----------|
+| `call_started` | `Debug` |
+| `call_succeeded` | `Information` |
+| `call_failed` | `Error` |
+| `retry_attempted` | `Warning` |
+| `circuit_opened` | `Warning` |
+| `circuit_closed` | `Information` |
+| `circuit_half_opened` | `Information` |
+| `fallback_used` | `Information` |
+| `timeout_breached` | `Warning` |
+| `rate_limited` | `Warning` |
+| `bulkhead_rejected` | `Warning` |
+
+The sink does **not** short-circuit on `ILogger.IsEnabled`. Filtering is the
+logger pipeline's responsibility, not the sink's.
+
+### 15.3 Metric sink
+
+`OpenTelemetryMetricSink` implements `IMetricSink`. Each `RecordCall` invocation
+produces three instrument recordings:
+
+| Instrument | Type | Unit | Tags |
+|------------|------|------|------|
+| `resilience.call.duration_ms` | Histogram (double) | `ms` | `policy_name`, `success` |
+| `resilience.call.succeeded_total` | Counter (long) | `{call}` | `policy_name`, `attempts` |
+| `resilience.call.failed_total` | Counter (long) | `{call}` | `policy_name`, `attempts` |
+
+**In-flight tracking is not exported.** The `IMetricSink` interface exposes only
+`RecordCall`; the in-flight gauge on `InMemoryMetricSink` is outside the
+interface.
+
+### 15.4 Package boundary
+
+The OTel integration ships as a separate NuGet package. It depends on:
+
+- `Portfolio.Resilience` (the core)
+- `OpenTelemetry.Api`
+- `Microsoft.Extensions.Logging.Abstractions`
+
+The core `Portfolio.Resilience` package is unaffected. It remains zero
+third-party dependencies.
+
+### 15.5 DI registration
+
+Two entry points are provided:
+
+- `IServiceCollection.AddPortfolioResilienceOpenTelemetry(string? meterName)`
+  - Composes the OTel sinks with any existing `ILogSink` / `IMetricSink`
+    registration.
+  - Order-independent relative to `AddPortfolioResilience`.
+- `ResilienceBuilder.AddOpenTelemetrySinks(ILoggerFactory, Meter?)`
+  - Directly adds the sinks to the builder.
+  - For callers who own the logger factory and meter.
+
+### 15.6 Associated files
+
+- `src/Portfolio.Resilience.OpenTelemetry/OpenTelemetryLogSink.cs`
+- `src/Portfolio.Resilience.OpenTelemetry/OpenTelemetryMetricSink.cs`
+- `src/Portfolio.Resilience.OpenTelemetry/OpenTelemetryBuilderExtensions.cs`
+
+---
+## 16. Hedging
+
+### 16.1 Purpose
+
+Fire parallel attempts of the same operation with a stagger delay between
+them, and return the first successful result. A latency optimization, not a
+reliability one. Retry handles transient failures; hedging handles tail
+latency.
+
+**Safety:** hedging is **not safe for non-idempotent operations** unless the
+downstream provider deduplicates on an idempotency key. A hedged
+`POST /charge` can create two charges. Implementations must warn when a policy
+enables hedging.
+
+### 16.2 The race
+
+1. Attempt 0 (the "primary") fires immediately.
+2. Before firing attempt N, wait `delay(N)` milliseconds. During the wait, if
+   any prior attempt has already succeeded, the hedge does not fire.
+3. If the delay elapses without a winner, attempt N fires. It runs in parallel
+   with the still-pending attempts.
+4. The first successful attempt wins. The others are either cancelled
+   (`CancelOnSuccess = true`, default) or allowed to complete.
+
+### 16.3 Delay calculation
+
+For attempt index N (0-based):
+
+| `ExponentialBackoff` | `delay(N)` |
+|----------------------|------------|
+| `false` (default) | `DelayMs` for N >= 1; 0 for N = 0 |
+| `true` | `DelayMs * 2^(N-1)` for N >= 1; 0 for N = 0 |
+
+### 16.4 Configuration keys
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `enabled` | bool | `false` | When false, hedging is a pass-through |
+| `max_attempts` | int | `2` | Total attempts including the primary |
+| `delay_ms` | int | `100` | Base stagger delay |
+| `exponential_backoff` | bool | `false` | Doubles the delay per attempt |
+| `attempt_timeout_ms` | int | `0` | Per-attempt ceiling; 0 = none |
+| `cancel_on_success` | bool | `true` | Cancel losers when a winner succeeds |
+| `emit_attempt_events` | bool | `true` | Emit hedge_won / hedge_lost / hedge_cancelled |
+| `rejection_category` | string | `Transient` | Category when all attempts fail |
+
+### 16.5 Events
+
+Three event types are added at values 11, 12, and 13:
+
+| Value | Event type | Meaning |
+|-------|------------|---------|
+| 11 | `hedge_won` | The winning attempt succeeded |
+| 12 | `hedge_lost` | A loser completed after the winner |
+| 13 | `hedge_cancelled` | A loser was cancelled by the winner |
+
+**Event fields** (in addition to §7.2):
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `attempt` | int | 1-based attempt number (primary = 1) |
+| `duration_ms` | float? | Present on `hedge_won` and `hedge_lost` |
+
+### 16.6 Failure semantics
+
+When all attempts fail, the exception thrown is the one from the **first**
+attempt. Other attempts' failures are attached to the exception's
+`Data` dictionary:
+
+- `Data["hedge_attempt_N"]` — the N-th attempt's error message (string)
+- `Data["hedge_attempt_N_exception"]` — the N-th attempt's exception (Exception)
+
+This preserves the original exception type for `catch` clauses while retaining
+full diagnostic information.
+
+### 16.7 Validation warnings
+
+Implementations must warn (not throw) at policy resolve for:
+
+| Condition | Warning |
+|-----------|---------|
+| `max_attempts <= 0` | "MaxAttempts must be greater than 0" |
+| `max_attempts > 5` | "MaxAttempts = N is aggressive; consider 2-3" |
+| `delay_ms < 0` | "DelayMs must not be negative" |
+| `attempt_timeout_ms < 0` | "AttemptTimeoutMs must not be negative" |
+| `attempt_timeout_ms > 0` and `< delay_ms` | "AttemptTimeoutMs is shorter than DelayMs; hedged attempts may never fire" |
+
+**In addition**, implementations must warn once per policy when
+`hedging.enabled` is true:
+
+    Policy 'X': Hedging is enabled. Ensure the operation is idempotent or
+    carries an idempotency key, or set Hedging.Enabled = false.
+
+### 16.8 Associated files
+
+- `src/Portfolio.Resilience/Policies/HedgingPolicyBuilder.cs`
+- `src/Portfolio.Resilience/Configuration/HedgingOptions.cs`
+- `src/Portfolio.Resilience/Events/ResilienceEventType.cs` (values 11, 12, 13)
+
+---
+## 17. Analyzers
+
+### 17.1 Purpose
+
+Ship Roslyn analyzers that warn at compile time when a code pattern almost
+certainly bypasses the resilience pipeline, or when a policy is configured
+with a value that cannot be valid. The analyzers are optional: they live in a
+separate package, `Portfolio.Resilience.Analyzers`, and do not affect the
+runtime behavior of the core library.
+
+### 17.2 Rules
+
+| Rule ID | Severity | Category | Detects |
+|---------|----------|----------|---------|
+| `PR0001` | Warning | Reliability | An `HttpClient` obtained from `IHttpClientFactory` is called directly, bypassing the resilience pipeline |
+| `PR0002` | Warning | Reliability | A policy enables a feature but sets a companion value to `0` or negative |
+
+Both rules are enabled by default and suppressible via `#pragma warning
+disable` or `.editorconfig`.
+
+### 17.3 PR0001 - HttpClient bypass
+
+**Detection:**
+
+1. Locate a field or property of type `System.Net.Http.HttpClient`.
+2. Recognize an assignment from `IHttpClientFactory.CreateClient(...)`,
+   either in a field initializer or in a constructor body.
+3. Detect a call to any of: `SendAsync`, `GetAsync`, `PostAsync`,
+   `PutAsync`, `DeleteAsync`, `PatchAsync`, `GetStringAsync`,
+   `GetByteArrayAsync`, `GetStreamAsync`, `GetFromJsonAsync`,
+   `PostAsJsonAsync`, `PutAsJsonAsync`, `DeleteFromJsonAsync` on that field.
+4. Emit a diagnostic if the enclosing class has no field, property, or
+   constructor parameter of type
+   `Portfolio.Resilience.Abstractions.IResilienceExecutor`.
+
+**Why the `IResilienceExecutor` guard:** a class that already depends on the
+executor knows about resilience. The guard eliminates false positives.
+
+### 17.4 PR0002 - Policy misconfiguration
+
+**Detection:**
+
+1. Find an invocation of `AddPolicy(string, Action<PolicyDefinition>)` on a
+   `ResilienceBuilder`.
+2. Collect every assignment inside the lambda's body where the left-hand side
+   is a chain of the form `<param>.<Options>.<Property>` and the right-hand
+   side is a literal number or boolean.
+3. Emit a diagnostic when an `Enabled = true` assignment and a companion
+   value assignment for the same feature appear in the same lambda and the
+   companion value is `<= 0`.
+4. Separately, emit a diagnostic when a negative value is assigned to
+   `Timeout.TimeoutMs` or `Retry.MaxAttempts`.
+
+**Companion pairs:**
+
+| Feature | Enabled key | Companion key | Rule |
+|---------|-------------|---------------|------|
+| Rate limiter | `RateLimiter.Enabled` | `RateLimiter.PermitLimit` | `> 0` |
+| Bulkhead | `Bulkhead.Enabled` | `Bulkhead.MaxConcurrency` | `> 0` |
+| Hedging | `Hedging.Enabled` | `Hedging.MaxAttempts` | `> 0` |
+| Timeout | - | `Timeout.TimeoutMs` | `>= 0` |
+| Retry | - | `Retry.MaxAttempts` | `>= 0` |
+
+**Limits:** the rule reads literal values only. Values loaded from
+configuration are validated at runtime by the options classes' `Validate`
+methods, not by the analyzer.
+
+### 17.5 Associated files
+
+- `src/Portfolio.Resilience.Analyzers/HttpClientBypassAnalyzer.cs`
+- `src/Portfolio.Resilience.Analyzers/MisconfigurationAnalyzer.cs`
+- `src/Portfolio.Resilience.Analyzers/AnalyzerReleases.Unshipped.md`
+
+---
 ## Appendix A — Versioning
 
 This spec follows semantic versioning:

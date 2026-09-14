@@ -51,6 +51,10 @@ sections will differ.
 | [circuit-breaker.md](circuit-breaker.md) | State machine (Closed / Open / HalfOpen), thresholds, probes |
 | [rate-limiter.md](rate-limiter.md) | Four strategies, queue behavior, rejection metadata |
 | [bulkhead.md](bulkhead.md) | Concurrency cap, waiter queue, slot release semantics |
+| [composition.md](composition.md) | Custom pipeline order via Wrap or Builder |
+| [opentelemetry.md](opentelemetry.md) | Optional OpenTelemetry log + metric export |
+| [hedging.md](hedging.md) | Parallel attempts with a latency race; safety limits |
+| [analyzers.md](analyzers.md) | Roslyn analyzers — compile-time resilience checks |
 | [executor.md](executor.md) | The `IResilienceExecutor` entry point, call-site patterns |
 | [http-integration.md](http-integration.md) | DelegatingHandler, named clients, per-service policies |
 | [api-stability.md](api-stability.md) | The frozen public API surface and versioning policy |

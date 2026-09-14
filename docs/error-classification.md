@@ -241,3 +241,177 @@ Verified by `tests/Portfolio.Resilience.Tests/ErrorClassifierTests.cs` (20 tests
 - [timeout.md](timeout.md) — why `Timeout` is distinct from `Transient`
 - [executor.md](executor.md) — where classification happens in the pipeline
 - [../SPEC.md](../SPEC.md) §ErrorCategories — the normative contract
+
+## How to use it — a worked walkthrough
+
+This section walks through using the classifier in a real service: from
+observing a failure, to reading the category, to acting on it correctly.
+
+### Step 1 — Observe a failure
+
+Suppose a call to the payments service fails. Your code wraps it through
+`IResilienceExecutor`:
+
+    try
+    {
+        var receipt = await _resilience.ExecuteAsync(
+            "payments-service",
+            ct => _payments.ChargeAsync(request, ct),
+            ct: ct);
+        return Ok(receipt);
+    }
+    catch (ResilienceException ex)
+    {
+        _logger.LogError(ex,
+            "Payment charge failed. Category={Category} Policy={Policy} Attempts={Attempts}",
+            ex.Category, ex.PolicyName, ex.AttemptsMade);
+
+        // Now what?
+    }
+
+**The interesting value is `ex.Category`.** Not `ex.Message`, not
+`ex.InnerException` — those are for humans. The category is what drives the
+correct response in code.
+
+### Step 2 — Read the category and branch
+
+Each category has a meaning that maps directly to an action.
+
+    catch (ResilienceException ex)
+    {
+        switch (ex.Category)
+        {
+            case ResilienceErrorCategory.Transient:
+                // The pipeline already retried MaxAttempts times and gave up.
+                // Options: return 503, queue for async retry, or escalate.
+                return StatusCode(503, "Upstream temporarily unavailable.");
+
+            case ResilienceErrorCategory.Timeout:
+                // The pipeline exceeded its ceiling on the final attempt.
+                // Same as Transient for the caller, but worth a different log
+                // level — a timeout is an SLA concern, not a transient blip.
+                _metrics.Increment("payments.timeout");
+                return StatusCode(504, "Upstream timed out.");
+
+            case ResilienceErrorCategory.CircuitOpen:
+                // The circuit is rejecting calls before they run. This is
+                // almost always an operational alert, not a user-visible error.
+                return StatusCode(503, "Service temporarily unavailable.");
+
+            case ResilienceErrorCategory.Permanent:
+                // A retry did not help (and was not even attempted).
+                // Almost always a code bug or a bad request.
+                return StatusCode(400, "Request could not be processed.");
+
+            case ResilienceErrorCategory.FallbackUsed:
+                // Only emitted on the event stream, not on exceptions. If you
+                // see this on an exception, something unexpected happened.
+                return StatusCode(200, "Degraded response.");
+
+            default:
+                return StatusCode(500, "Unexpected error.");
+        }
+    }
+
+**Why this matters:** the category *is the decision*. Without it, you would
+have to guess from the message or from `InnerException` — and different
+exceptions would need different, ad-hoc inspections.
+
+### Step 3 — Verify the classification is doing what you expect
+
+In development, log the classification alongside the raw exception so you can
+see whether the classifier agrees with your mental model:
+
+    catch (ResilienceException ex)
+    {
+        _logger.LogInformation(
+            "Resilience failure. Category={Category} Type={InnerType} Message={InnerMessage}",
+            ex.Category,
+            ex.InnerException?.GetType().Name ?? "none",
+            ex.InnerException?.Message ?? ex.Message);
+    }
+
+**Watch for surprises.** If a `System.TimeoutException` from your HTTP call
+is classified as `Transient` — that is correct (see the "Design note" above
+in this doc). If it should be `Timeout`, you have to say so explicitly with
+`ErrorClassificationOptions`.
+
+### Step 4 — Override classification for a specific dependency
+
+The classifier is configurable. If a dependency has unusual semantics that
+the default rules miss, adjust them.
+
+**Example: an internal service that uses `400` for transient overload.**
+
+Normally `400` is `Permanent`. But this internal service sends `400` with a
+`Retry-After` header when it is overloaded. Add `400` to the transient list:
+
+    var options = new ErrorClassificationOptions();
+    options.TransientHttpStatusCodes.Add(400);
+
+    builder.Services.AddPortfolioResilience(r => r
+        .AddPolicy("internal-api", p =>
+        {
+            p.Retry.MaxAttempts = 3;
+            // ...
+        }));
+
+    // Register the custom classifier
+    builder.Services.AddSingleton(new ErrorClassifier(options));
+
+**Example: a legacy exception that should not be retried.**
+
+Your application has a `MyApp.DataIntegrityException` that is currently
+classified as `Permanent` only because it is not on any list. Make it explicit:
+
+    options.PermanentExceptionTypeNames.Add("MyApp.DataIntegrityException");
+
+Explicit is better than relying on the fallback.
+
+### Step 5 — Read the category in your alerting rules
+
+Categories are the language-neutral way to write alerts. Instead of alerting
+on specific exception types (which vary by dependency), alert on categories:
+
+    # Pseudocode for an alert rule
+    when count(resilience.call_failed by error_category) > threshold
+    group by error_category, policy_name
+    alert when error_category in ("Transient", "Timeout")
+    for 5 minutes
+
+This gives you a single alert shape across every dependency, and a clear
+distinction between "the dependency is flaky" and "our code has a bug."
+
+### Step 6 — Recognize the difference between "the operation failed" and "we chose not to run it"
+
+Two of the six categories are not failures at all:
+
+- **`CircuitOpen`** — the operation **never ran**. No timeout, no network
+  traffic, no resource use. If your service sees this at scale, the upstream
+  is genuinely down and the circuit is protecting you. This is the circuit
+  working correctly.
+- **`FallbackUsed`** — the operation **failed**, but a degraded response was
+  produced and the caller got a value. In a health endpoint, this should
+  not count as a failure — it should count as an informational event.
+
+Treating these two like `Transient` failures causes alert fatigue. They are
+distinct operational signals.
+
+### A note on what NOT to do
+
+**Do not catch `ResilienceException` and rethrow it as a raw exception.** The
+category is the useful part. If you rethrow `ex.InnerException`, you lose the
+classification and force the caller to re-inspect.
+
+**Do not rely on `ex.Message` for decision-making.** Messages are for humans
+and can change without notice. Only `ex.Category` is contractual.
+
+**Do not add every custom exception to `PermanentExceptionTypeNames`.** Only
+add ones where the default fallback is wrong. The conservative default
+(`Permanent`) is a deliberate safety net — most unknown exceptions are not
+safe to retry.
+
+**Do not add HTTP codes to `TransientHttpStatusCodes` without a documented
+reason.** Every added code becomes a retry target. A code that is actually
+permanent will be hammered by retries — the exact opposite of what you want.
+

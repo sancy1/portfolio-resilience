@@ -67,7 +67,7 @@ Consumers read metrics through `LatencySnapshot`:
 - `ErrorRate` — `FailedCalls / TotalCalls`, as a fraction
 - `P50Ms`, `P95Ms`, `P99Ms` — percentiles over the rolling window
 - `AvgMs` — mean over the rolling window
-- `InFlight` — currently executing (currently always 0; wired in Stage F)
+- `InFlight` — currently executing
 
 ### The shipped implementation
 
@@ -80,16 +80,14 @@ still receive the sample.
 
 ## Where metrics are produced
 
-Today (Stage C): nothing produces metrics yet. The sink exists, it works, but nobody calls
-`RecordCall`. This is deliberate — the tracker lands in Stage E, and the executor wires
-it into the call path in Stage F.
+Every `IResilienceExecutor.ExecuteAsync(...)` call records a sample automatically.
+You never call `RecordCall` yourself. The executor wires the metric sink into the
+call path once per operation, at the end, with the total duration (including retries)
 
-From Stage F onward, every `IResilienceExecutor.ExecuteAsync(...)` call records a sample
-automatically. You never call `RecordCall` yourself.
 
 ## Reading metrics: the /health/resilience endpoint
 
-Stage H adds a health endpoint that reads from `ILatencyTracker` and `ICircuitBreakerMonitor`:
+A health endpoint reads from `ILatencyTracker` and `ICircuitBreakerMonitor` to expose the current state:
 
     GET /health/resilience
 
@@ -134,8 +132,8 @@ that dependency. If `p99Ms` is climbing, watch it.
 
 ## Configuration
 
-Metrics have no configuration on the sink itself beyond `windowSize`. Future stages will
-add a sampling ratio (record 1 in N calls) for very-high-throughput services.
+Metrics have no configuration on the sink itself beyond `windowSize`. A sampling ratio
+(record 1 in N calls) for very-high-throughput services is on the roadmap for a future release.
 
 If you need a Prometheus or OpenTelemetry exporter, register an additional sink that
 forwards to that system. The library stays out of the exporter business — that is what
@@ -215,7 +213,7 @@ No external services, no timing dependencies. Just numbers in, numbers out.
 
 - [logging.md](logging.md) — the sibling concern to metrics
 - [correlation.md](correlation.md) — how correlation ties samples to requests
-- [circuit-breaker.md](circuit-breaker.md) — how metrics inform circuit decisions (Stage E)
+- [circuit-breaker.md](circuit-breaker.md) — how metrics inform circuit decisions
 - [../SPEC.md](../SPEC.md) §Metrics — the normative metric name contract
 - [../README.md](../README.md) — package install and quick-start
 
@@ -233,18 +231,184 @@ and `tests/Portfolio.Resilience.Tests/CompositeMetricSinkTests.cs` (7 tests):
 - Thread safety: 1,000 parallel `RecordCall` invocations produce exact count
 - Composite fan-out forwards every field verbatim (policy, duration, success, attempts)
 - Composite exception isolation: one broken sink cannot stop the others
+## How to use it — a worked walkthrough
 
----
+This section walks through wiring metrics into a real service, reading them
+in a health endpoint, and interpreting the numbers in a monitoring tool.
 
-## Test coverage
+### Step 1 — Confirm the default sink is registered
 
-Verified by `tests/Portfolio.Resilience.Tests/InMemoryMetricSinkTests.cs` (19 tests)
-and `tests/Portfolio.Resilience.Tests/CompositeMetricSinkTests.cs` (7 tests):
+`AddPortfolioResilience` registers an `InMemoryMetricSink` automatically.
+There is nothing to configure for the common case:
 
-- Percentile math: p50 with odd and even counts, p95, p99, linear interpolation
-- Error rate computation, including zero-call safety
-- Rolling window bounds: cumulative counts never reset, percentiles reflect window only
-- Multi-policy isolation and case-insensitive policy name handling
-- Thread safety: 1,000 parallel `RecordCall` invocations produce exact count
-- Composite fan-out forwards every field verbatim (policy, duration, success, attempts)
-- Composite exception isolation: one broken sink cannot stop the others
+    builder.Services.AddPortfolioResilience(r => r
+        .AddPolicy("auth-service", p =>
+        {
+            p.Retry.MaxAttempts = 3;
+            p.Timeout.TimeoutMs = 5000;
+        }));
+
+After registration, the container can resolve `ILatencyTracker`:
+
+    var tracker = provider.GetRequiredService<ILatencyTracker>();
+    var snap = tracker.Get("auth-service");
+    // snap == null until at least one call has been recorded
+
+**You do not need to call `RecordCall` yourself.** The executor records a
+sample once per `ExecuteAsync` call, with the total duration (including
+retries) and the final outcome.
+
+### Step 2 — Expose the metrics through a health endpoint
+
+The library ships `ILatencyTracker` and `ICircuitBreakerMonitor` specifically
+so you can write a small health endpoint. Example controller:
+
+    [ApiController]
+    [Route("health/resilience")]
+    public sealed class ResilienceHealthController : ControllerBase
+    {
+        private readonly ILatencyTracker _tracker;
+        private readonly ICircuitBreakerMonitor _circuits;
+
+        public ResilienceHealthController(
+            ILatencyTracker tracker,
+            ICircuitBreakerMonitor circuits)
+        {
+            _tracker = tracker;
+            _circuits = circuits;
+        }
+
+        [HttpGet]
+        public IActionResult Get()
+        {
+            var circuits = _circuits.Snapshot().ToDictionary(c => c.PolicyName);
+            var policies = _tracker.Snapshot().Select(l => new
+            {
+                name = l.PolicyName,
+                circuitState = circuits.TryGetValue(l.PolicyName, out var c)
+                    ? c.State.ToString()
+                    : "Unknown",
+                p50Ms = l.P50Ms,
+                p95Ms = l.P95Ms,
+                p99Ms = l.P99Ms,
+                errorRate = l.ErrorRate,
+                totalCalls = l.TotalCalls,
+                inFlight = l.InFlight
+            });
+
+            return Ok(new { policies });
+        }
+    }
+
+**Protect this endpoint in production.** It reveals internal policy names,
+latencies, and failure rates. Use the same authentication as your other
+admin endpoints.
+
+### Step 3 — Read the numbers with the right questions
+
+A single snapshot is not useful. The useful questions are comparative:
+
+| Question | Where to look |
+|----------|--------------|
+| Is the typical call fast? | `p50Ms` should be stable and low for the dependency's class (e.g. 5–50ms for in-cluster, 50–200ms for external) |
+| Is the tail acceptable? | `p99Ms` should be within the dependency's SLA. If p99 is >10× p50, you have a long-tail problem |
+| Are failures rare? | `errorRate` should be under the budget for the dependency (e.g. <1% for a healthy internal service) |
+| Is the dependency under stress? | Watch `inFlight` — a rising count means calls are piling up |
+| Is the circuit healthy? | `circuitState` should be `Closed`. `Open` means the dependency is down; `HalfOpen` means it is probing recovery |
+
+### Step 4 — React to a bad signal
+
+Three concrete scenarios and the right response:
+
+**Scenario A — p99 climbs but p50 is stable.**
+
+Something rare is slow. Possibly a cache miss path, a lock contention issue,
+or a specific request shape. Pull the slow traces by filtering logs for
+`duration_ms > 500`. Fix the slow path — do not raise the timeout.
+
+**Scenario B — errorRate climbs slowly.**
+
+A dependency is degrading. Check the `error_category` distribution in your
+log sink. If `Transient` dominates, the dependency is having intermittent
+trouble. If `Timeout` dominates, the ceiling is firing — either the
+dependency is slower than its SLA, or the ceiling is too low.
+
+**Scenario C — inFlight never returns to zero.**
+
+Something is hanging. Check whether a call is ignoring its cancellation token.
+A well-behaved operation honors `ct.ThrowIfCancellationRequested()` at await
+points; one that ignores it holds a thread indefinitely.
+
+### Step 5 — Forward metrics to a real system
+
+The in-memory sink is fine for a health endpoint. For long-term dashboards
+and alerting, forward samples to Prometheus, OpenTelemetry, Datadog, or
+similar. Two options:
+
+**Option A — install the OpenTelemetry package.** `Portfolio.Resilience.OpenTelemetry`
+ships an `OpenTelemetryMetricSink` that exports every sample as native OTel
+histograms and counters. See [opentelemetry.md](opentelemetry.md).
+
+**Option B — write your own sink.** Implement `IMetricSink` and register it
+via `AddMetricSink(...)`. The composite sink fans out to every registered
+sink, so the in-memory sink keeps powering the health endpoint while your
+custom sink forwards to the external system:
+
+    public sealed class PrometheusMetricSink : IMetricSink
+    {
+        private static readonly Histogram<double> Duration = Metrics
+            .CreateHistogram<double>("resilience_call_duration_ms", "ms");
+
+        public void RecordCall(string policyName, TimeSpan duration, bool success, int attempts)
+        {
+            Duration.Record(
+                duration.TotalMilliseconds,
+                new KeyValuePair<string, object?>("policy", policyName),
+                new KeyValuePair<string, object?>("success", success));
+        }
+    }
+
+    // Registration
+    builder.Services.AddPortfolioResilience(r => r
+        .AddMetricSink(new PrometheusMetricSink())
+        .AddPolicy("auth-service", p => { /* ... */ }));
+
+**The composite sink isolates exceptions.** If your custom sink throws, the
+in-memory sink still receives the sample, and the pipeline does not fail.
+
+### Step 6 — Choose a window size
+
+`InMemoryMetricSink` keeps the last 1000 samples per policy by default. Two
+things to know:
+
+- **Smaller windows** (100–500) are more reactive but noisier at low volume.
+- **Larger windows** (1000–10000) are smoother but slower to reflect a sudden
+  change.
+
+**Start with the default.** For a service calling a dependency fewer than
+10 times per second, 1000 samples cover 1.5+ minutes of history — enough to
+see trends. For higher volumes, the window represents a shorter window of
+wall-clock time, so consider increasing it.
+
+To change the size, register a custom sink with the desired window:
+
+    builder.Services.AddSingleton<IMetricSink>(
+        new InMemoryMetricSink(windowSize: 5000));
+
+**Note:** this replaces the automatic in-memory sink. If you want both the
+default and a larger window, register the larger one as an *additional* sink
+via `AddMetricSink(...)` — the composite keeps both.
+
+### A note on what NOT to do
+
+**Do not read `errorRate` in isolation.** `errorRate = 0.5` on four calls is
+noise. `errorRate = 0.05` on 100,000 calls is a real problem. Always read the
+rate **alongside `totalCalls`**.
+
+**Do not reset metrics on deploy.** The rolling window is in-memory. A restart
+clears it. If you need history across deploys, forward to Prometheus or OTel
+using the pattern in Step 5.
+
+**Do not expose the endpoint unauthenticated.** Internal policy names,
+latency distributions, and failure rates are operational intelligence. In a
+production environment, protect them.
