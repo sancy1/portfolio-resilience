@@ -40,4 +40,7 @@ public sealed class PolicyDefinition
 
     /// <summary>Bulkhead isolation tuning. See <c>docs/bulkhead.md</c>.</summary>
     public BulkheadOptions Bulkhead { get; set; } = new();
+
+    /// <summary>Hedging tuning. See <c>docs/hedging.md</c>.</summary>
+    public HedgingOptions Hedging { get; set; } = new();
 }

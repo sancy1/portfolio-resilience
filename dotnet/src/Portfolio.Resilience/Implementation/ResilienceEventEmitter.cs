@@ -269,4 +269,65 @@ public sealed class ResilienceEventEmitter
             }
         });
     }
+
+    /// <summary>
+    /// Emits <see cref="ResilienceEventType.HedgeWon"/> when a hedged attempt
+    /// succeeds first in the race.
+    /// </summary>
+    /// <param name="policyName">The policy name.</param>
+    /// <param name="attemptNumber">The winning attempt number (1-based).</param>
+    /// <param name="durationMs">The elapsed time from attempt start to success.</param>
+    public void EmitHedgeWon(string policyName, int attemptNumber, double durationMs)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(policyName);
+
+        Emit(new ResilienceEvent
+        {
+            EventType = ResilienceEventType.HedgeWon,
+            PolicyName = policyName,
+            Attempt = attemptNumber,
+            DurationMs = durationMs,
+            CorrelationId = CorrelationContext.CurrentId
+        });
+    }
+
+    /// <summary>
+    /// Emits <see cref="ResilienceEventType.HedgeLost"/> when a hedged attempt
+    /// completed after the winner; its result was discarded.
+    /// </summary>
+    /// <param name="policyName">The policy name.</param>
+    /// <param name="attemptNumber">The losing attempt number (1-based).</param>
+    /// <param name="durationMs">The elapsed time from attempt start to completion.</param>
+    public void EmitHedgeLost(string policyName, int attemptNumber, double durationMs)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(policyName);
+
+        Emit(new ResilienceEvent
+        {
+            EventType = ResilienceEventType.HedgeLost,
+            PolicyName = policyName,
+            Attempt = attemptNumber,
+            DurationMs = durationMs,
+            CorrelationId = CorrelationContext.CurrentId
+        });
+    }
+
+    /// <summary>
+    /// Emits <see cref="ResilienceEventType.HedgeCancelled"/> when a hedged
+    /// attempt was cancelled because another attempt won the race.
+    /// </summary>
+    /// <param name="policyName">The policy name.</param>
+    /// <param name="attemptNumber">The cancelled attempt number (1-based).</param>
+    public void EmitHedgeCancelled(string policyName, int attemptNumber)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(policyName);
+
+        Emit(new ResilienceEvent
+        {
+            EventType = ResilienceEventType.HedgeCancelled,
+            PolicyName = policyName,
+            Attempt = attemptNumber,
+            CorrelationId = CorrelationContext.CurrentId
+        });
+    }
 }

@@ -167,6 +167,17 @@ public sealed class ResiliencePolicyRegistry : IResiliencePolicyRegistry
                 MaxQueue = source.Bulkhead.MaxQueue,
                 QueueTimeoutMs = source.Bulkhead.QueueTimeoutMs,
                 RejectionCategory = source.Bulkhead.RejectionCategory
+            },
+            Hedging = new HedgingOptions
+            {
+                Enabled = source.Hedging.Enabled,
+                MaxAttempts = source.Hedging.MaxAttempts,
+                DelayMs = source.Hedging.DelayMs,
+                ExponentialBackoff = source.Hedging.ExponentialBackoff,
+                AttemptTimeoutMs = source.Hedging.AttemptTimeoutMs,
+                CancelOnSuccess = source.Hedging.CancelOnSuccess,
+                EmitAttemptEvents = source.Hedging.EmitAttemptEvents,
+                RejectionCategory = source.Hedging.RejectionCategory
             }
         };
     }

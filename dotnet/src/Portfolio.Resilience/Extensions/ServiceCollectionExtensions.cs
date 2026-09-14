@@ -72,8 +72,21 @@ public static class ServiceCollectionExtensions
         // Configuration. Policy validation warnings are routed through Trace -
         // see ResiliencePolicyRegistry for the once-per-policy behaviour.
         services.AddSingleton(builder.Options);
-        services.AddSingleton<IResiliencePolicyRegistry>(_ =>
-            new ResiliencePolicyRegistry(builder.Options, Warn));
+        services.AddSingleton<IResiliencePolicyRegistry>(sp =>
+        {
+            // Apply any pending post-configuration actions before the registry
+            // is constructed. This allows later extensions (for example
+            // AddStandardResilienceHandler) to inject policies into the options
+            // object even though it was captured by reference at registration
+            // time. IEnumerable<T> resolution picks up every registration made
+            // before the first resolve, regardless of call order.
+            foreach (var action in sp.GetServices<Action<ResilienceOptions>>())
+            {
+                action(builder.Options);
+            }
+
+            return new ResiliencePolicyRegistry(builder.Options, Warn);
+        });
 
         // Correlation
         services.AddSingleton<ICorrelationAccessor, Correlation.AsyncLocalCorrelationAccessor>();
@@ -94,13 +107,16 @@ public static class ServiceCollectionExtensions
             new RateLimiterPolicyBuilder(sp.GetRequiredService<ResilienceEventEmitter>()));
         services.AddSingleton<BulkheadPolicyBuilder>(sp =>
             new BulkheadPolicyBuilder(sp.GetRequiredService<ResilienceEventEmitter>()));
+        services.AddSingleton<HedgingPolicyBuilder>(sp =>
+            new HedgingPolicyBuilder(sp.GetRequiredService<ResilienceEventEmitter>()));
         services.AddSingleton<CompositePolicyBuilder>(sp =>
             new CompositePolicyBuilder(
                 sp.GetRequiredService<RetryPolicyBuilder>(),
                 sp.GetRequiredService<CircuitPolicyBuilder>(),
                 sp.GetRequiredService<TimeoutPolicyBuilder>(),
                 sp.GetRequiredService<RateLimiterPolicyBuilder>(),
-                sp.GetRequiredService<BulkheadPolicyBuilder>()));
+                sp.GetRequiredService<BulkheadPolicyBuilder>(),
+                sp.GetRequiredService<HedgingPolicyBuilder>()));
 
         // Executor - the main entry point
         services.AddSingleton<IResilienceExecutor>(sp =>

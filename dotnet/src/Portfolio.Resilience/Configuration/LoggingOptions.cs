@@ -60,4 +60,10 @@ public sealed class LoggingOptions
 
     /// <summary>Emit <c>bulkhead_rejected</c> events. Default: true.</summary>
     public bool EmitBulkheadRejected { get; set; } = true;
+
+    /// <summary>
+    /// Emit hedge events (<c>hedge_won</c>, <c>hedge_lost</c>,
+    /// <c>hedge_cancelled</c>). Default: true.
+    /// </summary>
+    public bool EmitHedgeEvents { get; set; } = true;
 }

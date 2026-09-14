@@ -166,5 +166,19 @@ public static class ConfigurationExtensions
             target.Bulkhead.QueueTimeoutMs    = bulkhead.GetValue<int?>("QueueTimeoutMs")     ?? target.Bulkhead.QueueTimeoutMs;
             target.Bulkhead.RejectionCategory = bulkhead.GetValue<Errors.ResilienceErrorCategory?>("RejectionCategory") ?? target.Bulkhead.RejectionCategory;
         }
+
+        // Hedging
+        var hedging = section.GetSection("Hedging");
+        if (hedging.Exists())
+        {
+            target.Hedging.Enabled           = hedging.GetValue<bool?>("Enabled")           ?? target.Hedging.Enabled;
+            target.Hedging.MaxAttempts       = hedging.GetValue<int?>("MaxAttempts")        ?? target.Hedging.MaxAttempts;
+            target.Hedging.DelayMs           = hedging.GetValue<int?>("DelayMs")            ?? target.Hedging.DelayMs;
+            target.Hedging.ExponentialBackoff = hedging.GetValue<bool?>("ExponentialBackoff") ?? target.Hedging.ExponentialBackoff;
+            target.Hedging.AttemptTimeoutMs  = hedging.GetValue<int?>("AttemptTimeoutMs")   ?? target.Hedging.AttemptTimeoutMs;
+            target.Hedging.CancelOnSuccess   = hedging.GetValue<bool?>("CancelOnSuccess")   ?? target.Hedging.CancelOnSuccess;
+            target.Hedging.EmitAttemptEvents = hedging.GetValue<bool?>("EmitAttemptEvents") ?? target.Hedging.EmitAttemptEvents;
+            target.Hedging.RejectionCategory = hedging.GetValue<Errors.ResilienceErrorCategory?>("RejectionCategory") ?? target.Hedging.RejectionCategory;
+        }
     }
 }

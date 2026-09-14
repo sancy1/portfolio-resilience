@@ -48,5 +48,14 @@ public enum ResilienceEventType
     RateLimited = 9,
 
     /// <summary>A bulkhead rejected a call (no concurrency slot, or queue full/timeout).</summary>
-    BulkheadRejected = 10
+    BulkheadRejected = 10,
+
+    /// <summary>A hedged attempt succeeded first in the race.</summary>
+    HedgeWon = 11,
+
+    /// <summary>A hedged attempt completed after the winner; its result was discarded.</summary>
+    HedgeLost = 12,
+
+    /// <summary>A hedged attempt was cancelled when the winner completed.</summary>
+    HedgeCancelled = 13
 }
