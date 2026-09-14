@@ -29,42 +29,20 @@ public sealed class MisconfigurationAnalyzerTests
 
     private static IReadOnlyList<MetadataReference> BuildReferences()
     {
-        var refs = new List<MetadataReference>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Base .NET 10 reference assemblies from the Basic.Reference.Assemblies
+        // package. Ships as ordinary NuGet assets - no OS-specific path resolution.
+        var refs = new List<MetadataReference>(Basic.Reference.Assemblies.Net100.References.All);
 
-        void AddPath(string path)
-        {
-            if (!string.IsNullOrEmpty(path) && File.Exists(path) && seen.Add(path))
-            {
-                refs.Add(MetadataReference.CreateFromFile(path));
-            }
-        }
+        // The Microsoft.Extensions.* assemblies are not covered by
+        // Basic.Reference.Assemblies. They come from the Microsoft.AspNetCore.App
+        // framework reference on the test project.
+        refs.Add(MetadataReference.CreateFromFile(
+            typeof(System.Net.Http.IHttpClientFactory).Assembly.Location));
+        refs.Add(MetadataReference.CreateFromFile(
+            typeof(Microsoft.Extensions.DependencyInjection.IServiceCollection).Assembly.Location));
 
-        void AddDirectory(string dir)
-        {
-            if (!Directory.Exists(dir)) return;
-            foreach (var dll in Directory.EnumerateFiles(dir, "*.dll"))
-            {
-                AddPath(dll);
-            }
-        }
-
-        var dotnetRoot = ReferenceAssemblies.GetDotnetPacksRoot();
-
-        void AddPack(string packName)
-        {
-            var packRoot = Path.Combine(dotnetRoot, packName);
-            if (!Directory.Exists(packRoot)) return;
-            var versionDir = Directory.GetDirectories(packRoot)
-                .OrderByDescending(d => d, StringComparer.OrdinalIgnoreCase)
-                .FirstOrDefault();
-            if (versionDir is null) return;
-            AddDirectory(Path.Combine(versionDir, "ref", "net10.0"));
-        }
-
-        AddPack("Microsoft.NETCore.App.Ref");
-        AddPack("Microsoft.AspNetCore.App.Ref");
-        AddPath(typeof(ResilienceBuilder).Assembly.Location);
+        // The library under test, from the build output.
+        refs.Add(MetadataReference.CreateFromFile(typeof(Portfolio.Resilience.Configuration.ResilienceBuilder).Assembly.Location));
 
         return refs;
     }
@@ -349,4 +327,7 @@ public static class Setup
         diagnostics.Should().BeEmpty();
     }
 }
+
+
+
 
