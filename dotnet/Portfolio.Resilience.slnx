@@ -1,8 +1,12 @@
-<Solution>
+﻿<Solution>
   <Folder Name="/src/">
     <Project Path="src/Portfolio.Resilience/Portfolio.Resilience.csproj" />
+    <Project Path="src/Portfolio.Resilience.OpenTelemetry/Portfolio.Resilience.OpenTelemetry.csproj" />
+    <Project Path="src/Portfolio.Resilience.Analyzers/Portfolio.Resilience.Analyzers.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Portfolio.Resilience.Tests/Portfolio.Resilience.Tests.csproj" />
+    <Project Path="tests/Portfolio.Resilience.OpenTelemetry.Tests/Portfolio.Resilience.OpenTelemetry.Tests.csproj" />
+    <Project Path="tests/Portfolio.Resilience.Analyzers.Tests/Portfolio.Resilience.Analyzers.Tests.csproj" />
   </Folder>
 </Solution>
