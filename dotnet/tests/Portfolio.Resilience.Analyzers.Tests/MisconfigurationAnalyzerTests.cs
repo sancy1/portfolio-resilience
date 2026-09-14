@@ -49,9 +49,7 @@ public sealed class MisconfigurationAnalyzerTests
             }
         }
 
-        var dotnetRoot = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-            "dotnet", "packs");
+        var dotnetRoot = ReferenceAssemblies.GetDotnetPacksRoot();
 
         void AddPack(string packName)
         {
@@ -351,3 +349,4 @@ public static class Setup
         diagnostics.Should().BeEmpty();
     }
 }
+

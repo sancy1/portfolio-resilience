@@ -49,8 +49,7 @@ public sealed class HttpClientBypassAnalyzerTests
             }
         }
 
-        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        var dotnetRoot = Path.Combine(programFiles, "dotnet", "packs");
+        var dotnetRoot = ReferenceAssemblies.GetDotnetPacksRoot();
 
         // Reference assemblies for the base framework (System.Runtime, etc.).
         AddDirectoryFromPack(Path.Combine(dotnetRoot, "Microsoft.NETCore.App.Ref"), "net10.0");
@@ -344,3 +343,4 @@ namespace TestNs
         diagnostics.Should().BeEmpty();
     }
 }
+
