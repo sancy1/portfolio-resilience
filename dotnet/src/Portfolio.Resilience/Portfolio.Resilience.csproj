@@ -11,12 +11,12 @@
     <!-- ============================================================ -->
     <!-- Package metadata — visible on nuget.org                     -->
     <!-- ============================================================ -->
-    <Version>0.6.1</Version>
+    <Version>0.7.0</Version>
     <PackageId>Portfolio.Resilience</PackageId>
     <Authors>Alexander Sanchez Cyril</Authors>
     <Company>Alexander Sanchez Cyril</Company>
-    <Description>Resilience primitives for .NET: rate limiter, bulkhead, retry, circuit breaker, timeout, fallback, correlation, structured logging, and latency metrics. Small, spec-driven, and dependency-free.</Description>
-    <PackageTags>resilience;rate-limiter;bulkhead;circuit-breaker;retry;timeout;fallback;correlation;logging;metrics;polly-alternative;dotnet;microservices</PackageTags>
+    <Description>Resilience primitives for .NET: rate limiter, bulkhead, hedging, retry, circuit breaker, timeout, fallback, policy composition, correlation, structured logging, and latency metrics. Small, spec-driven, and dependency-free.</Description>
+    <PackageTags>resilience;rate-limiter;bulkhead;hedging;circuit-breaker;retry;timeout;fallback;composition;correlation;logging;metrics;polly-alternative;dotnet;microservices</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageProjectUrl>https://github.com/sancy1/portfolio-resilience</PackageProjectUrl>

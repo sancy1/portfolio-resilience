@@ -1,6 +1,18 @@
 ﻿# filepath: .github/workflows/publish.yml
-# purpose:  Publish Portfolio.Resilience to nuget.org when a version tag is pushed.
-#           Uses Trusted Publishing (OIDC) — no API keys stored anywhere.
+# purpose:  Publish all three Portfolio.Resilience packages to nuget.org when
+#           a version tag is pushed. Uses Trusted Publishing (OIDC) - no API
+#           keys stored anywhere.
+#
+# Packages published:
+#   - Portfolio.Resilience                 (core)
+#   - Portfolio.Resilience.OpenTelemetry   (optional, v0.7.0+)
+#   - Portfolio.Resilience.Analyzers       (optional, v0.7.0+)
+#
+# nuget.org Trusted Publishing policy:
+#   Package owner: sancy
+#   Glob:          *
+#   Repository:    sancy1/portfolio-resilience
+#   Workflow:      publish.yml
 
 name: publish
 
@@ -18,7 +30,7 @@ jobs:
   publish:
     name: Pack and publish to nuget.org
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -40,19 +52,27 @@ jobs:
       - name: Test (Release)
         run: dotnet test dotnet/Portfolio.Resilience.slnx --no-build --configuration Release
 
-      - name: Pack
-        run: dotnet pack dotnet/src/Portfolio.Resilience/Portfolio.Resilience.csproj --no-build --configuration Release --output ./nupkg
+      - name: Pack all three packages
+        run: |
+          dotnet pack dotnet/src/Portfolio.Resilience/Portfolio.Resilience.csproj \
+            --no-build --configuration Release --output ./nupkg
+          dotnet pack dotnet/src/Portfolio.Resilience.OpenTelemetry/Portfolio.Resilience.OpenTelemetry.csproj \
+            --no-build --configuration Release --output ./nupkg
+          dotnet pack dotnet/src/Portfolio.Resilience.Analyzers/Portfolio.Resilience.Analyzers.csproj \
+            --no-build --configuration Release --output ./nupkg
 
       - name: List pack output
         run: ls -la ./nupkg
 
       # ---------------------------------------------------------------
-      # Trusted Publishing (OIDC) — nuget.org validates the request
-      # against the trust policy we configured:
-      #   Repository Owner: sancy1
-      #   Repository:       portfolio-resilience
-      #   Workflow:         publish.yml
-      # No API key needed. No secrets stored.
+      # Trusted Publishing (OIDC) - nuget.org validates the request
+      # against the trust policy configured for this repository:
+      #   Package owner: sancy
+      #   Glob:          *
+      #   Repository:    sancy1/portfolio-resilience
+      #   Workflow:      publish.yml
+      # One API key from this step can push every package the policy
+      # permits.
       # ---------------------------------------------------------------
       - name: NuGet login (OIDC)
         uses: NuGet/login@v1
@@ -60,17 +80,23 @@ jobs:
         with:
           user: sancy
 
-      - name: Push to nuget.org
+      - name: Push all packages to nuget.org
         run: |
-          dotnet nuget push ./nupkg/*.nupkg \
-            --api-key ${{ steps.login.outputs.NUGET_API_KEY }} \
-            --source https://api.nuget.org/v3/index.json \
-            --skip-duplicate
+          for pkg in ./nupkg/*.nupkg; do
+            echo "Pushing $pkg"
+            dotnet nuget push "$pkg" \
+              --api-key ${{ steps.login.outputs.NUGET_API_KEY }} \
+              --source https://api.nuget.org/v3/index.json \
+              --skip-duplicate
+          done
 
       - name: Push symbols (.snupkg) to nuget.org
         run: |
-          dotnet nuget push ./nupkg/*.snupkg \
-            --api-key ${{ steps.login.outputs.NUGET_API_KEY }} \
-            --source https://api.nuget.org/v3/index.json \
-            --skip-duplicate
+          for pkg in ./nupkg/*.snupkg; do
+            echo "Pushing symbols $pkg"
+            dotnet nuget push "$pkg" \
+              --api-key ${{ steps.login.outputs.NUGET_API_KEY }} \
+              --source https://api.nuget.org/v3/index.json \
+              --skip-duplicate || true
+          done
         continue-on-error: true    # symbols upload is best-effort
