@@ -1,14 +1,15 @@
 ﻿// filepath: src/Portfolio.Resilience/Policies/RetryPolicyBuilder.cs
-// layer: Policies | package: Portfolio.Resilience | since: v0.2.0
+// layer: Policies | package: Portfolio.Resilience | since: v0.7.0
 // purpose: Executes an operation with exponential-backoff retry, using the error classifier to gate retries.
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // RELATIONSHIPS
-//   Implements : n/a (concrete builder)
-//   Depends on : RetryOptions, ErrorClassifier, ResilienceErrorCategory
-//   Used by    : CompositePolicyBuilder, ResilienceExecutor (Stage F)
-//   See also   : docs/retry.md, SPEC.md §Retry
-// ─────────────────────────────────────────────────────────────────────────────
+//   Implements : IResiliencePolicy (v0.7.0)
+//   Depends on : RetryOptions, ErrorClassifier, ResilienceErrorCategory, PolicyDefinition
+//   Used by    : CompositePolicyBuilder, ResilienceExecutor, ResiliencePipeline
+//   See also   : docs/retry.md, docs/composition.md, SPEC.md section 4
+// -----------------------------------------------------------------------------
 
+using Portfolio.Resilience.Abstractions;
 using Portfolio.Resilience.Configuration;
 using Portfolio.Resilience.Errors;
 
@@ -27,7 +28,7 @@ namespace Portfolio.Resilience.Policies;
 /// validation failures and other terminal conditions.
 /// </para>
 /// </summary>
-public sealed class RetryPolicyBuilder
+public sealed class RetryPolicyBuilder : IResiliencePolicy
 {
     /// <summary>
     /// Delay function. Defaults to <see cref="Task.Delay(TimeSpan, CancellationToken)"/>.
@@ -83,6 +84,18 @@ public sealed class RetryPolicyBuilder
             // Any other exception (or last attempt) propagates out.
         }
     }
+
+    // ------------------------------------------------------------------------
+    // IResiliencePolicy
+    // ------------------------------------------------------------------------
+
+    /// <inheritdoc />
+    Task<T> IResiliencePolicy.ExecuteAsync<T>(
+        string policyName,
+        Func<CancellationToken, Task<T>> operation,
+        PolicyDefinition definition,
+        CancellationToken ct)
+        => ExecuteAsync(operation, definition.Retry, ct);
 
     // ------------------------------------------------------------------------
     // Internals

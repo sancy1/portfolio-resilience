@@ -9,6 +9,7 @@
 //   See also   : docs/rate-limiter.md, SPEC.md section 12
 // -----------------------------------------------------------------------------
 
+using Portfolio.Resilience.Abstractions;
 using System.Collections.Concurrent;
 using Portfolio.Resilience.Configuration;
 using Portfolio.Resilience.Errors;
@@ -32,7 +33,7 @@ namespace Portfolio.Resilience.Policies;
 /// across the operation; all other strategies decide and release before the operation runs.
 /// </para>
 /// </remarks>
-public sealed class RateLimiterPolicyBuilder
+public sealed class RateLimiterPolicyBuilder : IResiliencePolicy
 {
     /// <summary>
     /// Delay function. Defaults to <see cref="Task.Delay(TimeSpan, CancellationToken)"/>.
@@ -398,6 +399,18 @@ public sealed class RateLimiterPolicyBuilder
 
         return AcquireResult.Reject(queueDepth, "queue_timeout");
     }
+
+    // ------------------------------------------------------------------------
+    // IResiliencePolicy
+    // ------------------------------------------------------------------------
+
+    /// <inheritdoc />
+    Task<T> IResiliencePolicy.ExecuteAsync<T>(
+        string policyName,
+        Func<CancellationToken, Task<T>> operation,
+        PolicyDefinition definition,
+        CancellationToken ct)
+        => ExecuteAsync(policyName, operation, definition.RateLimiter, ct);
 
     // ------------------------------------------------------------------------
     // Types

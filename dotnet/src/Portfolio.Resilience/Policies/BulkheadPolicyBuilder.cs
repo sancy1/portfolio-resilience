@@ -9,6 +9,7 @@
 //   See also   : docs/bulkhead.md, SPEC.md section 13
 // -----------------------------------------------------------------------------
 
+using Portfolio.Resilience.Abstractions;
 using System.Collections.Concurrent;
 using Portfolio.Resilience.Configuration;
 using Portfolio.Resilience.Errors;
@@ -34,7 +35,7 @@ namespace Portfolio.Resilience.Policies;
 /// with the configured <see cref="BulkheadOptions.RejectionCategory"/>.
 /// </para>
 /// </remarks>
-public sealed class BulkheadPolicyBuilder
+public sealed class BulkheadPolicyBuilder : IResiliencePolicy
 {
     private readonly ResilienceEventEmitter _emitter;
     private readonly ConcurrentDictionary<string, BulkheadState> _states
@@ -160,6 +161,18 @@ public sealed class BulkheadPolicyBuilder
                 ["reason"] = reason
             });
     }
+
+    // ------------------------------------------------------------------------
+    // IResiliencePolicy
+    // ------------------------------------------------------------------------
+
+    /// <inheritdoc />
+    Task<T> IResiliencePolicy.ExecuteAsync<T>(
+        string policyName,
+        Func<CancellationToken, Task<T>> operation,
+        PolicyDefinition definition,
+        CancellationToken ct)
+        => ExecuteAsync(policyName, operation, definition.Bulkhead, ct);
 
     // ------------------------------------------------------------------------
     // Types

@@ -1,13 +1,14 @@
 ﻿// filepath: src/Portfolio.Resilience/Policies/CircuitPolicyBuilder.cs
-// layer: Policies | package: Portfolio.Resilience | since: v0.2.0
+// layer: Policies | package: Portfolio.Resilience | since: v0.7.0
 // purpose: Circuit breaker state machine. Gates operations based on consecutive failures.
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // RELATIONSHIPS
-//   Implements : ICircuitBreakerMonitor (per-policy snapshots for health endpoints)
-//   Depends on : CircuitOptions, ErrorClassifier, ResilienceException
-//   Used by    : CompositePolicyBuilder, ResilienceExecutor (Stage F), /health/resilience
-//   See also   : docs/circuit-breaker.md, SPEC.md §CircuitBreaker
-// ─────────────────────────────────────────────────────────────────────────────
+//   Implements : ICircuitBreakerMonitor (per-policy snapshots for health endpoints),
+//                IResiliencePolicy (v0.7.0)
+//   Depends on : CircuitOptions, ErrorClassifier, ResilienceException, PolicyDefinition
+//   Used by    : CompositePolicyBuilder, ResilienceExecutor, ResiliencePipeline, /health/resilience
+//   See also   : docs/circuit-breaker.md, docs/composition.md, SPEC.md section 5
+// -----------------------------------------------------------------------------
 
 using System.Collections.Concurrent;
 using Portfolio.Resilience.Abstractions;
@@ -29,7 +30,7 @@ namespace Portfolio.Resilience.Policies;
 /// HalfOpen --(probe fails)--------------------------> Open
 /// </code>
 /// </remarks>
-public sealed class CircuitPolicyBuilder : ICircuitBreakerMonitor
+public sealed class CircuitPolicyBuilder : ICircuitBreakerMonitor, IResiliencePolicy
 {
     private readonly ErrorClassifier _classifier;
     private readonly Func<DateTime> _clock;
@@ -96,6 +97,18 @@ public sealed class CircuitPolicyBuilder : ICircuitBreakerMonitor
     }
 
     // ------------------------------------------------------------------------
+    // IResiliencePolicy
+    // ------------------------------------------------------------------------
+
+    /// <inheritdoc />
+    Task<T> IResiliencePolicy.ExecuteAsync<T>(
+        string policyName,
+        Func<CancellationToken, Task<T>> operation,
+        PolicyDefinition definition,
+        CancellationToken ct)
+        => ExecuteAsync(policyName, operation, definition.Circuit, ct);
+
+    // ------------------------------------------------------------------------
     // ICircuitBreakerMonitor
     // ------------------------------------------------------------------------
 
@@ -132,13 +145,13 @@ public sealed class CircuitPolicyBuilder : ICircuitBreakerMonitor
 
         /// <summary>
         /// Returns true if the caller may proceed. Performs time-based
-        /// transitions (Open → HalfOpen) as a side effect.
+        /// transitions (Open -> HalfOpen) as a side effect.
         /// </summary>
         public bool TryEnter(CircuitOptions options, DateTime now)
         {
             lock (_gate)
             {
-                // Time-based transition: Open → HalfOpen.
+                // Time-based transition: Open -> HalfOpen.
                 if (_state == CircuitState.Open
                     && _openedAtUtc.HasValue
                     && (now - _openedAtUtc.Value).TotalSeconds >= options.OpenDurationSeconds)
@@ -175,7 +188,7 @@ public sealed class CircuitPolicyBuilder : ICircuitBreakerMonitor
                 // Only certain categories count toward opening the circuit.
                 if (options.OnlyCountTransient && category != ResilienceErrorCategory.Transient)
                 {
-                    // Permanent errors don't count.
+                    // Permanent errors do not count.
                     if (_state == CircuitState.HalfOpen)
                     {
                         // But a failed probe still returns to Open.
@@ -190,7 +203,7 @@ public sealed class CircuitPolicyBuilder : ICircuitBreakerMonitor
 
                 if (_state == CircuitState.HalfOpen)
                 {
-                    // Failed probe → back to Open.
+                    // Failed probe -> back to Open.
                     _state = CircuitState.Open;
                     _openedAtUtc = now;
                     _probeInFlight = false;
