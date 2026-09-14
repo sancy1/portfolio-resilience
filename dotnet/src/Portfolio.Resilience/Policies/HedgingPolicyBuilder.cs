@@ -1,4 +1,4 @@
-﻿// filepath: src/Portfolio.Resilience/Policies/HedgingPolicyBuilder.cs
+// filepath: src/Portfolio.Resilience/Policies/HedgingPolicyBuilder.cs
 // layer: Policies | package: Portfolio.Resilience | since: v0.7.0
 // purpose: Runs parallel hedged attempts with a stagger delay; first success wins.
 // -----------------------------------------------------------------------------
@@ -11,6 +11,7 @@
 
 using Portfolio.Resilience.Abstractions;
 using Portfolio.Resilience.Configuration;
+using Portfolio.Resilience.Correlation;
 using Portfolio.Resilience.Errors;
 using Portfolio.Resilience.Implementation;
 
@@ -148,7 +149,23 @@ public sealed class HedgingPolicyBuilder : IResiliencePolicy
                 return won.Value.result;
             }
 
-            // No winner yet. Fire the hedge.
+            // Time-budget check: do not fire a new hedge if the remaining
+            // budget cannot cover the stagger delay plus a floor for the
+            // attempt itself. When no budget scope is active (RemainingMs
+            // is null), behavior is unchanged from v0.7.0.
+            var budgetRemaining = TimeBudgetContext.RemainingMs;
+            if (budgetRemaining is not null)
+            {
+                var minimumNeeded = delayMs + Math.Max(0, options.AttemptTimeoutMs);
+                if (budgetRemaining.Value < minimumNeeded)
+                {
+                    // Skip firing this and all subsequent hedges. Wait for
+                    // the already-in-flight attempts to resolve.
+                    break;
+                }
+            }
+
+            // No winner yet and budget permits - fire the hedge.
             attempts[i] = StartAttempt(i, operation, startTimes, attemptInvoked, options.AttemptTimeoutMs, linkedCts.Token);
         }
 

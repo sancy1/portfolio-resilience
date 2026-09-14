@@ -1,4 +1,4 @@
-﻿// filepath: src/Portfolio.Resilience/Extensions/ServiceCollectionExtensions.cs
+// filepath: src/Portfolio.Resilience/Extensions/ServiceCollectionExtensions.cs
 // layer: Extensions | package: Portfolio.Resilience | since: v0.6.0
 // purpose: One-line DI registration. Wires the whole library with sensible defaults, overridable.
 // -----------------------------------------------------------------------------
@@ -58,15 +58,26 @@ public static class ServiceCollectionExtensions
         });
 
         // Compose the log sink: user-registered or NullLogSink fallback.
+        // When any policy enables ScrubSensitiveData, we always use a
+        // CompositeLogSink (even for a single child) so the scrubber runs
+        // once before any sink sees the event.
         services.AddSingleton<ILogSink>(_ =>
         {
             var children = builder.LogSinks.ToArray();
-            return children.Length switch
+            var scrub = builder.Options.AnyPolicyScrubsSensitiveData();
+            var scrubber = scrub ? new DefaultPciScrubber() : null;
+
+            if (children.Length == 0)
             {
-                0 => NullLogSink.Instance,
-                1 => children[0],
-                _ => new CompositeLogSink(children)
-            };
+                return NullLogSink.Instance;
+            }
+
+            if (children.Length == 1 && !scrub)
+            {
+                return children[0];
+            }
+
+            return new CompositeLogSink(children, logger: null, scrubber: scrubber);
         });
 
         // Configuration. Policy validation warnings are routed through Trace -

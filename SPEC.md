@@ -1099,3 +1099,326 @@ Every implementation **must** include tests covering:
 
 Deviations from the spec **must** be documented in the implementation's README,
 with a version bump if any behavior changes.
+
+---
+
+## 18. Idempotency key propagation
+
+### 18.1 Purpose
+
+Attach a stable idempotency key to **every attempt** of an operation - the
+primary call, every retry, and every hedged attempt - so that downstream
+services that deduplicate on the key observe a single logical write.
+
+**This applies to any operation with the property "running it twice produces
+two effects"** - charges, order creation, event publishing, notification
+sends - not only to payments. Payments are the strictest case, so an
+implementation that satisfies this section for payments satisfies it for the
+softer cases.
+
+### 18.2 Resolution order
+
+The effective key for a call is resolved in this order. First non-null wins.
+
+1. **Explicit parameter.** `ExecuteAsync(..., idempotencyKey: "order-12345")`.
+2. **Ambient key.** A value already present in the ambient idempotency store.
+3. **Auto-derived from correlation ID.** `"idem-" + correlation_id`.
+4. **Auto-derived from a fresh GUID.** `"idem-" + uuid4_hex`.
+
+The resolution is stable for the duration of the call: the same key is visible
+to every retry and every hedged attempt.
+
+### 18.3 Ambient storage
+
+The idempotency key is stored in an ambient, async-safe primitive that survives
+await boundaries and is isolated between concurrent flows. The primitive is
+language-dependent:
+
+- C#: `AsyncLocal<string?>`
+- Python: `contextvars.ContextVar`
+- Go: `context.Context` value
+
+The push/pop semantics must be nested: pushing a new key inside an existing
+scope restores the previous value on pop.
+
+### 18.4 HTTP header
+
+When an HTTP client is used inside the pipeline, the ambient key is emitted as
+an HTTP header on **every request the handler sends for this call** - the
+primary request and every retried request.
+
+- **Default header name:** `Idempotency-Key`.
+- **Configurable** per HTTP client. Implementations must allow overriding the
+  header name for providers with a different convention.
+
+The header must be present on every attempt, and the value must be identical
+across attempts for one logical call.
+
+### 18.5 Configuration keys
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `idempotency_header_name` | string | `Idempotency-Key` | Header name used by the HTTP handler |
+
+### 18.6 Event fields
+
+No new event types are introduced. The key is not exposed in event metadata by
+default - it belongs to the operation, not to the resilience layer. Callers
+who want the key in their audit trail should add it to their own application
+logs.
+
+### 18.7 Failure semantics
+
+- If the header name is null or whitespace, the implementation must log a
+  warning and default to `Idempotency-Key` at runtime. It must not throw.
+- If the ambient store is unavailable (not applicable in C#), the
+  implementation must skip header emission rather than crash.
+- If the explicit parameter is null or whitespace, the implementation must
+  treat it as "not provided" and fall through to the next resolution step.
+
+### 18.8 Associated files
+
+- `src/Portfolio.Resilience/Correlation/IdempotencyContext.cs`
+- `src/Portfolio.Resilience/Configuration/HttpClientOptions.cs`
+- `src/Portfolio.Resilience/HttpClient/ResilientHttpMessageHandler.cs`
+
+---
+
+## 19. PCI-safe event scrubbing
+
+### 19.1 Purpose
+
+Redact sensitive patterns from every `ResilienceEvent` **before any log sink
+sees it**. This applies to any service that handles sensitive data - card
+numbers, PII, tokens, API keys - not only to payments.
+
+### 19.2 The `IEventScrubber` contract
+
+    ResilienceEvent Scrub(ResilienceEvent evt)
+
+- Returns a **new** event instance; never mutates the input.
+- Must be thread-safe.
+- Must not throw. A thrown exception propagates to the emitter and can break
+  the pipeline's logging path.
+
+### 19.3 Default scrubber
+
+Implementations **must** ship a default scrubber that masks at minimum:
+
+| Family | Pattern | Example |
+|--------|---------|---------|
+| PAN | 13-19 consecutive digits, optionally separated by single spaces or dashes | `4111111111111111`, `4111-1111-1111-1111` |
+| CVV/CVC | 3-4 digits adjacent to the tokens `cvv` or `cvc` (case-insensitive) | `cvv 123`, `CVC: 4567` |
+| SSN | US Social Security Number in canonical `ddd-dd-dddd` format | `123-45-6789` |
+
+Matches are replaced with the literal token `[REDACTED]`.
+
+### 19.4 Scope of scrubbing
+
+The scrubber **must** apply to:
+
+- `ResilienceEvent.ErrorMessage`
+- `ResilienceEvent.ErrorType`
+- Every string value in `ResilienceEvent.Metadata`
+
+Non-string metadata values **must** pass through unchanged.
+
+### 19.5 Where scrubbing runs
+
+Scrubbing runs **once per event**, before the sink fan-out. Every sink
+receives the scrubbed copy - no sink ever sees the original.
+
+When scrubbing is enabled and a single sink is registered, the implementation
+**must** still route events through the scrubber. The composite-sink wrapper
+exists for exactly this case; it is not merely a fan-out mechanism.
+
+### 19.6 Configuration key
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `scrub_sensitive_data` | bool | `false` | When true (on any policy), installs the default scrubber globally |
+
+The flag is a **signal** that at least one policy needs scrubbing. Once the
+flag is true anywhere, the implementation **must** scrub every event -
+including events from policies that did not opt in.
+
+### 19.7 Custom scrubbers
+
+Implementations **must** expose the `IEventScrubber` interface as a public
+extension point. A custom scrubber replaces the default one entirely.
+
+### 19.8 What this section does NOT guarantee
+
+- That sensitive data is not present in events (the library cannot inspect
+  operation internals).
+- That all locale-specific identity formats are masked.
+- That non-string metadata values are redacted.
+
+The scrubber is a **last line of defense**, not a compliance guarantee.
+
+### 19.9 Associated files
+
+- `src/Portfolio.Resilience/Abstractions/IEventScrubber.cs`
+- `src/Portfolio.Resilience/Sinks/DefaultPciScrubber.cs`
+- `src/Portfolio.Resilience/Sinks/CompositeLogSink.cs`
+- `src/Portfolio.Resilience/Configuration/LoggingOptions.cs`
+
+---
+
+## 20. Time budget propagation
+
+### 20.1 Purpose
+
+Enforce a **total wall-clock budget** for an operation across every layer of
+the pipeline. The budget spans the initial call, every retry, and every hedge.
+When the budget expires, layers stop adding new work and surface the last
+failure.
+
+**This applies to any operation with the property "the caller has an SLA"** -
+payments (3s end-to-end), search (500ms), user-facing reads, or any path with
+a scheduler-driven deadline - not only to payments.
+
+### 20.2 Ambient storage
+
+The budget is stored in an ambient, async-safe primitive that survives await
+boundaries and is isolated between concurrent flows. The primitive is
+language-dependent:
+
+- C#: `AsyncLocal<DateTime?>` holding an absolute deadline
+- Python: `contextvars.ContextVar`
+- Go: `context.Context` value
+
+The **absolute deadline** is computed at the moment the executor pushes the
+budget. Remaining time is `deadline - now`, evaluated at each layer's
+consultation point.
+
+### 20.3 Resolution semantics
+
+A call's budget is set by the caller. When null, no budget scope exists and
+every layer must behave as if the feature is not present. Implementations
+**must not** invent a default budget.
+
+### 20.4 Layer behavior
+
+Every layer that can multiply wall-clock time **must** consult the budget:
+
+| Layer | Behavior when budget is active |
+|-------|-------------------------------|
+| Retry | Do not start a new attempt if `delay + floor` exceeds remaining budget |
+| Timeout | Use `min(configured_timeout, remaining_budget)` as the effective ceiling |
+| Hedging | Do not fire a new hedge if `delay + attempt_timeout` exceeds remaining budget |
+| Circuit | No change - delegates to the inner timeout |
+
+The **floor** for retry is implementation-defined; a reasonable choice is
+`base_delay_ms`. The floor ensures the next attempt has a minimum runtime
+budget rather than running with zero time.
+
+### 20.5 Disabled timeout interaction
+
+When `timeout.timeout_ms <= 0` (disabled) **and** a budget is active, the
+budget becomes the effective per-attempt ceiling. This is deliberate: the
+caller's SLA is non-negotiable even when the policy disables its own
+per-attempt timeout.
+
+When `timeout.timeout_ms <= 0` and **no budget** is active, behavior is
+unchanged - the operation runs to completion or until the caller's own token
+fires.
+
+### 20.6 Exhausted budget at entry
+
+If the budget is already exhausted when a layer consults it:
+
+- **Timeout** throws `ResilienceException(Timeout)` immediately with
+  `metadata.remaining_ms` recording the (non-positive) remaining value.
+- **Retry** rethrows the last exception without scheduling another attempt.
+- **Hedging** skips the hedge and waits for in-flight attempts to resolve.
+
+### 20.7 Event fields
+
+No new event types are introduced. When a retry is stopped by budget
+exhaustion, the emitted `call_failed` event carries the last error's category
+as usual. The budget itself is not emitted as a separate event.
+
+### 20.8 Configuration key
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `time_budget_ms` | int? | `null` | Total wall-clock budget for the call. Null disables the feature |
+
+The key is a **call-site parameter**, not a policy setting. The same policy
+may be called with different budgets from different call sites.
+
+### 20.9 Associated files
+
+- `src/Portfolio.Resilience/Correlation/TimeBudgetContext.cs`
+- `src/Portfolio.Resilience/Implementation/ResilienceExecutor.cs`
+- `src/Portfolio.Resilience/Policies/RetryPolicyBuilder.cs`
+- `src/Portfolio.Resilience/Policies/TimeoutPolicyBuilder.cs`
+- `src/Portfolio.Resilience/Policies/HedgingPolicyBuilder.cs`
+
+---
+
+## 21. Payment-safe pipeline preset
+
+### 21.1 Purpose
+
+Provide a **named factory** that returns a `ResiliencePipeline` with a fixed
+safe layer order for critical write paths. The preset is intended for any
+operation where the property "an accidental multi-attempt race is harmful"
+holds - charges, refunds, order creation, event publishing, notification
+sends - not only for payments.
+
+### 21.2 The safe order
+
+    RateLimiter -> Bulkhead -> Circuit -> Hedging -> Retry -> Timeout -> Operation
+
+Compared to the default pipeline order
+
+    RateLimiter -> Bulkhead -> Hedging -> Retry -> Circuit -> Timeout -> Operation
+
+the preset moves **Circuit outside Hedging and Retry**. A circuit rejection
+therefore never spawns additional attempts.
+
+### 21.3 Enforces order, not enablement
+
+The preset **must** include all six layers unconditionally. Each layer reads
+its own flag from the `PolicyDefinition` and passes through when disabled:
+
+- `RateLimiter.Enabled = false` → rate limiter passes through
+- `Bulkhead.Enabled = false` → bulkhead passes through
+- `Hedging.Enabled = false` → hedging passes through
+- `Retry.MaxAttempts = 0` → retry runs the operation once
+- `Timeout.TimeoutMs <= 0` → timeout is disabled
+- Circuit has no `Enabled` flag; it is always active
+
+The preset **must not** conditionally include or exclude layers based on
+`PolicyDefinition` - inclusion is fixed by the factory, and each layer's
+runtime behavior is what honors the flags.
+
+### 21.4 API shape
+
+    ResiliencePipeline.WithPaymentSafeDefaults()
+    ResiliencePipeline.WithPaymentSafeDefaults(
+        RateLimiterPolicyBuilder? rateLimiter = null,
+        BulkheadPolicyBuilder? bulkhead = null,
+        CircuitPolicyBuilder? circuit = null,
+        HedgingPolicyBuilder? hedging = null,
+        RetryPolicyBuilder? retry = null,
+        TimeoutPolicyBuilder? timeout = null)
+
+Any null argument **must** be replaced with a fresh instance so callers can
+customize a subset of layers without supplying the rest.
+
+### 21.5 When to use
+
+**Recommended** for any non-idempotent write path with a critical SLA.
+
+**Not recommended** for general reads. The default pipeline is the right
+choice for reads - it places hedging before retry, which is the desired
+behavior when the operation is safe to duplicate.
+
+### 21.6 Associated files
+
+- `src/Portfolio.Resilience/Policies/ResiliencePipeline.cs`
+- `src/Portfolio.Resilience/Policies/CompositePolicyBuilder.cs` (default order)
+- `src/Portfolio.Resilience/Abstractions/IResiliencePolicy.cs`

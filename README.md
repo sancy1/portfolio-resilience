@@ -1,6 +1,6 @@
-﻿<!--
+<!--
 filepath: README.md
-package:  Portfolio.Resilience | since: v0.7.0
+package:  Portfolio.Resilience | since: v0.8.0
 purpose:  Main project README - install, quick-start, feature overview, and links.
 -->
 
@@ -8,7 +8,7 @@ purpose:  Main project README - install, quick-start, feature overview, and link
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET](https://img.shields.io/badge/.NET-10.0-purple.svg)](https://dotnet.microsoft.com/)
-[![Tests](https://img.shields.io/badge/tests-417%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-523%20passing-brightgreen.svg)](#)
 [![NuGet](https://img.shields.io/badge/nuget-Portfolio.Resilience-blue.svg)](https://www.nuget.org/packages/Portfolio.Resilience)
 
 > **Resilience primitives for .NET.** Rate limiter, bulkhead, hedging, retry,
@@ -101,6 +101,121 @@ structured events via `ILogSink` and records latency via `IMetricSink`. Every
 event carries a `correlation_id`. The two side channels run parallel to the
 execution pipeline - no configuration required to get events or metrics; they
 work out of the box with sensible defaults.
+
+---
+
+## How we compare with Polly
+
+Polly is the .NET standard for resilience - mature, widely adopted, and the
+base for Microsoft's own `Microsoft.Extensions.Resilience`. Portfolio.Resilience
+is not a Polly replacement; it has a different design center. This table
+summarizes where the two libraries overlap and where each has an edge.
+
+| Feature | Portfolio.Resilience | Polly | MS.Extensions.Http.Resilience |
+|---------|---------------------|-------|-------------------------------|
+| Retry + backoff + jitter | ✅ | ✅ | ✅ |
+| Circuit breaker | ✅ | ✅ | ✅ |
+| Timeout (per-attempt) | ✅ | ✅ | ✅ |
+| Fallback | ✅ | ✅ | ✅ |
+| Rate limiter (4 strategies) | ✅ | ✅ | ✅ |
+| Bulkhead | ✅ | ✅ | ✅ |
+| Hedging | ✅ | ✅ | ✅ |
+| Idempotency key propagation | ✅ | ❌ | ❌ |
+| PCI-safe event scrubbing | ✅ | ❌ | ❌ |
+| Timeout budget propagation | ✅ | ❌ | ❌ |
+| Payment-safe pipeline preset | ✅ | ❌ | ❌ |
+| Policy composition (Wrap) | ✅ | ✅ | ✅ |
+| OpenTelemetry integration | ✅ | ✅ | ✅ |
+| Compile-time analyzers | ✅ | ❌ | ✅ |
+| `AddStandardResilienceHandler()` | ✅ | ❌ | ✅ |
+| Chaos engineering | 🔜 v1.x | ✅ | ❌ |
+| Cloud sinks | ecosystem | ecosystem | ecosystem |
+| Ambient correlation IDs | ✅ built-in | manual | partial |
+| Cross-language SPEC | ✅ | ❌ | ❌ |
+| Latency percentiles without OTel | ✅ | OTel only | OTel only |
+| Zero core dependencies | ✅ | ✅ | ❌ (Polly) |
+
+### What we bring that Polly does not
+
+Four v0.8.0 features address the specific needs of any service handling
+non-idempotent writes, sensitive data, or strict SLAs:
+
+- **Idempotency key propagation** - every retry attempt carries the same
+  key, so a hedged or retried write reaches the downstream provider as one
+  logical operation. Polly leaves this to the caller.
+- **PCI-safe event scrubbing** - one flag turns on PAN/CVV/SSN masking
+  before any log sink sees an event. Polly has no equivalent.
+- **Timeout budget propagation** - a caller expresses "this whole call must
+  fit in 3 seconds" and every layer caps itself to that budget. Polly's
+  per-attempt timeouts compose without a total ceiling.
+- **Payment-safe pipeline preset** - a named factory returns a fixed safe
+  layer order so a critical write never races. Polly requires careful manual
+  composition.
+
+Three structural properties also remain differentiators:
+
+1. **Correlation IDs are built in.** Every event, exception, and metric
+   carries a `correlation_id` automatically. One HTTP header
+   (`X-Correlation-Id`) propagates across services. With Polly you wire this
+   yourself.
+
+2. **Structured events have a cross-language contract.** `SPEC.md` defines
+   every event name (`retry_attempted`, `circuit_opened`, `rate_limited`,
+   `hedge_won`, etc.), every field name (`policy_name`, `attempt`,
+   `duration_ms`), every metric name (`p50_ms`, `error_rate`), and every
+   error category. A future Python or Go implementation produces identical
+   output, so dashboards work across languages.
+
+3. **Observability is included, not deferred.** p50/p95/p99 latency, error
+   rates, and in-flight counts are computed by the library. No OpenTelemetry
+   setup required. If you already use OTel, our optional package feeds it.
+
+### Where Polly still leads
+
+- **Chaos engineering.** Polly's Simmy injects faults for resilience testing.
+  This library has explicitly deferred that to v1.x. If you need to inject
+  chaos today, Polly is the only option among the three.
+- **Ecosystem maturity.** Polly has 200M+ downloads, .NET Foundation
+  membership, and a broad plugin ecosystem. Portfolio.Resilience is new and
+  has no plugin marketplace. It has a smaller surface, a single maintainer,
+  and a simpler dependency story.
+
+### Cloud sinks
+
+Every backend - Datadog, Application Insights, Sentry, Honeycomb, Grafana,
+New Relic - is reachable today via `ILogSink` plus the optional
+`Portfolio.Resilience.OpenTelemetry` package. The library does not ship
+per-vendor sinks; the OTel package is the universal adapter, and a custom
+sink is ~30 lines. This keeps the core zero-dependency. See
+[docs/logging.md](docs/logging.md) for the pattern.
+
+### When to choose Polly / MS.Extensions.Resilience
+
+- You want the industry standard.
+- You need chaos engineering **today**.
+- You're already invested in the Polly / OpenTelemetry ecosystem.
+- You want the widest ecosystem of plugins and community support.
+
+### When to choose Portfolio.Resilience
+
+- You want **correlation IDs and structured observability built in** rather
+  than assembled from separate pieces.
+- You have **multiple services in different languages** and want a
+  consistent event schema and error taxonomy.
+- You want a **small, dependency-free core library** with no transitive
+  package chain.
+- You want compile-time analyzers that catch resilience mistakes before
+  they ship.
+- You need **idempotency, PCI scrubbing, or total time budgets** - the four
+  v0.8.0 features Polly does not offer.
+- You want to learn from or extend a well-documented, spec-driven codebase.
+
+### Can I use both?
+
+Yes. They operate at different layers. Some teams use Polly for the
+fine-grained HTTP client pipeline and Portfolio.Resilience for the
+higher-level operation pipeline (database calls, Redis, cross-service
+business operations). Neither library knows or cares about the other.
 
 ---
 
@@ -550,83 +665,6 @@ Two side channels:
 Everything is swappable. `AddPortfolioResilience` wires sensible defaults; each
 piece can be replaced.
 
-## Comparison with other libraries
-
-**Polly** is the .NET standard for resilience - 200M+ downloads, .NET Foundation
-member, and the base for Microsoft's own `Microsoft.Extensions.Resilience`. This
-library is **not a Polly replacement.** It has a different design center.
-
-### Feature comparison
-
-| Feature | Portfolio.Resilience | Polly | MS.Extensions.Http.Resilience |
-|---------|---------------------|-------|-------------------------------|
-| Retry + exponential backoff + jitter | [ok] | [ok] | [ok] |
-| Circuit breaker | [ok] | [ok] | [ok] |
-| Timeout per attempt | [ok] | [ok] | [ok] |
-| Fallback | [ok] | [ok] | [ok] |
-| Rate limiter | [ok] **v0.6.0** | [ok] | [ok] |
-| Bulkhead isolation | [ok] **v0.6.0** | [ok] | [ok] |
-| **Hedging** | [ok] **v0.7.0** | [ok] | [ok] |
-| **Policy composition (Wrap)** | [ok] **v0.7.0** | [ok] | [ok] |
-| **OpenTelemetry integration** | [ok] **v0.7.0** (optional package) | [ok] | [ok] |
-| **Compile-time analyzers** | [ok] **v0.7.0** (optional package) | [no] | [ok] |
-| **`AddStandardResilienceHandler()`** | [ok] **v0.7.0** | [no] | [ok] |
-| **Chaos engineering (Simmy)** | [soon] v2.x | [ok] | [no] |
-| **Built-in cloud sinks** | [soon] v0.8.0 | ecosystem | ecosystem |
-| **Ambient correlation IDs** | [ok] **built-in** | manual | partial |
-| **Structured event schema (cross-language)** | [ok] **SPEC.md** | manual | no |
-| **Latency percentiles built-in** | [ok] **no OTel required** | OTel only | OTel only |
-| **Zero external dependencies (core)** | [ok] | [ok] | [no] (Polly) |
-| .NET 10 target | [ok] | [ok] | [ok] |
-| Ecosystem maturity | new | 200M+ downloads | Microsoft-backed |
-
-### What this library does differently
-
-Three design decisions that Polly deliberately leaves to the consumer:
-
-1. **Correlation IDs are built in.** Every event, exception, and metric carries
-   a `correlation_id` automatically. One HTTP header (`X-Correlation-Id`)
-   propagates across services. With Polly you wire this yourself.
-
-2. **Structured events have a cross-language contract.** `SPEC.md` defines every
-   event name (`retry_attempted`, `circuit_opened`, `rate_limited`, `hedge_won`,
-   etc.), every field name (`policy_name`, `attempt`, `duration_ms`), every
-   metric name (`p50_ms`, `error_rate`), and every error category. A future
-   Python or Go implementation produces **identical output**, so dashboards
-   work across languages.
-
-3. **Observability is included, not deferred.** p50/p95/p99 latency, error rates,
-   and in-flight counts are computed by the library. No OpenTelemetry setup
-   required. If you already use OTel, our optional package feeds it.
-
-### When to choose Polly / MS.Extensions.Resilience
-
-- You want the industry standard.
-- You need chaos engineering **today**.
-- You're already invested in the Polly / OpenTelemetry ecosystem.
-- You want the widest ecosystem of plugins and community support.
-
-### When to choose Portfolio.Resilience
-
-- You want **correlation IDs and structured observability built in** rather than
-  assembled from separate pieces.
-- You have **multiple services in different languages** and want a consistent
-  event schema and error taxonomy.
-- You want a **small, dependency-free core library** with no transitive package
-  chain.
-- You want compile-time analyzers that catch resilience mistakes before they
-  ship.
-- You want to learn from or extend a well-documented, spec-driven codebase.
-
-### Can I use both?
-
-Yes - they operate at different layers. Some teams use Polly for the fine-grained
-HTTP client pipeline and Portfolio.Resilience for the higher-level operation
-pipeline (database calls, Redis, cross-service business operations). Neither
-library knows or cares about the other.
-
----
-
 ## Documentation
 
 Full documentation lives in [`docs/`](docs/):
@@ -687,14 +725,14 @@ examples - not just API reference.
         |   +-- Portfolio.Resilience.OpenTelemetry/ - OTel export (optional)
         |   +-- Portfolio.Resilience.Analyzers/    - Roslyn analyzers (optional)
         +-- tests/
-        |   +-- Portfolio.Resilience.Tests/               - 362 core tests
+        |   +-- Portfolio.Resilience.Tests/               - 468 core tests
         |   +-- Portfolio.Resilience.OpenTelemetry.Tests/ - 37 OTel tests
         |   +-- Portfolio.Resilience.Analyzers.Tests/     - 18 analyzer tests
         +-- Portfolio.Resilience.slnx
 
 ## Test suite
 
-**417 tests, 0 failures, 0 warnings.** Run them with:
+**523 tests, 0 failures, 0 warnings.** Run them with:
 
     cd dotnet
     dotnet test Portfolio.Resilience.slnx
@@ -702,8 +740,10 @@ examples - not just API reference.
 Coverage spans every sink, the correlation primitive, the error classifier,
 each policy builder (retry, timeout, circuit, rate limiter, bulkhead, hedging),
 the composite pipeline, the composition API, the registry, the executor, the
-HTTP handler, the standard handler, the OpenTelemetry sinks, and the Roslyn
-analyzers.
+HTTP handler, the standard handler, the OpenTelemetry sinks, the Roslyn
+analyzers, and the four v0.8.0 features (idempotency key propagation,
+PCI-safe event scrubbing, timeout budget propagation, and the payment-safe
+pipeline preset).
 
 ## Design principles
 
@@ -740,7 +780,15 @@ Priority is driven by (1) what users need most and (2) closing the feature gap
 with Polly. Everything below is tracked in the repo's issues and planned in
 this order.
 
-### v0.7.0 - Current line [released 2026-09-14]
+### v0.8.0 - Current line [released 2026-09-14]
+
+| Feature | Status |
+|---------|--------|
+| **Idempotency key propagation** | Released - every retry and hedged attempt carries the same key; `Idempotency-Key` header emitted by the HTTP handler |
+| **PCI-safe event scrubbing** | Released - `IEventScrubber` + `DefaultPciScrubber`; opt-in via `LoggingOptions.ScrubSensitiveData` |
+| **Timeout budget propagation** | Released - `timeBudgetMs` on `ExecuteAsync`; retry, timeout, and hedging layers cap themselves to the remaining budget |
+| **Payment-safe pipeline preset** | Released - `ResiliencePipeline.WithPaymentSafeDefaults()` enforces the safe layer order for critical writes |
+### v0.7.0 - Previous line [released 2026-09-14]
 
 | Feature | Status |
 |---------|--------|
@@ -753,16 +801,6 @@ this order.
 | **Bulkhead isolation** | [ok] Since v0.6.0 - concurrency cap with bounded waiter queue |
 | **Retry + circuit + timeout + fallback** | [ok] Since v0.5.0 |
 | **Correlation + logging + metrics** | [ok] Since v0.2.0-v0.5.0 |
-
-### v0.8.0 - Payment-grade resilience
-
-| Feature | Why it matters |
-|---------|---------------|
-| **Idempotency key propagation** | Automatically attach the same idempotency key to every retry attempt. Safe hedging and retry for non-idempotent writes. |
-| **PCI-safe event scrubbing** | Pluggable `IEventScrubber` that masks PAN, CVV, and SSN patterns in event metadata before they reach a sink. |
-| **Timeout budget propagation** | `ExecuteAsync(..., timeBudgetMs: 3000)` enforces a total wall-clock budget across all layers, not just per attempt. |
-| **Payment-safe pipeline preset** | `ResiliencePipeline.WithPaymentSafeDefaults()` - a pipeline shape that prevents accidental 6-attempt races against a charge endpoint. |
-| **Built-in cloud sinks** | First-party `OpenTelemetrySink`, `DatadogSink`, `ApplicationInsightsSink`. |
 
 ### v1.0.0 - API freeze
 
@@ -787,6 +825,7 @@ this order.
 - **A Dashboard UI** - the health endpoint is enough. UI is a separate concern.
 - **A `RateLimit` middleware replacement** - ASP.NET Core has rate limiting built in; use it at the edge, use us for outbound calls.
 - **Retries for non-idempotent operations without an idempotency key** - enforced by documentation and startup warnings, not by runtime blocking.
+- **First-party cloud sinks** - the OTel package is the universal adapter; a custom sink is ~30 lines. See the comparison table above.
 
 See [CHANGELOG.md](CHANGELOG.md) for historical changes.
 

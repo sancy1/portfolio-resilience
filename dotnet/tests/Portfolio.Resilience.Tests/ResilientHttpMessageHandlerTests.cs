@@ -1,12 +1,12 @@
-﻿// filepath: tests/Portfolio.Resilience.Tests/ResilientHttpMessageHandlerTests.cs
+// filepath: tests/Portfolio.Resilience.Tests/ResilientHttpMessageHandlerTests.cs
 // layer: Tests | package: Portfolio.Resilience.Tests | since: v0.4.0
 // purpose: Verifies the HTTP handler routes through the executor, retries on 5xx, and clones requests per attempt.
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // RELATIONSHIPS
 //   Tests      : ResilientHttpMessageHandler (HttpClient/ResilientHttpMessageHandler.cs)
 //   Depends on : IResilienceExecutor, HttpMessageHandler, xUnit, FluentAssertions
 //   See also   : docs/http-integration.md
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 using System.Net;
 using System.Net.Http;
@@ -245,5 +245,113 @@ public sealed class ResilientHttpMessageHandlerTests
             var body = await r.Content!.ReadAsStringAsync();
             body.Should().Be("{\"x\":1}");
         }
+    }
+    // ------------------------------------------------------------------------
+    // v0.8.0 - Idempotency-Key header emission
+    // ------------------------------------------------------------------------
+
+    [Fact]
+    public async Task SendAsync_WithIdempotencyKey_AddsHeaderToRequest()
+    {
+        var inner = new ScriptedHandler(_ => Ok("ok"));
+        var ex = BuildExecutor();
+        var handler = new ResilientHttpMessageHandler(ex, "http-test") { InnerHandler = inner };
+        var http = new System.Net.Http.HttpClient(handler);
+
+        using (Correlation.IdempotencyContext.Push("order-12345"))
+        {
+            await http.GetAsync("https://example.test/api");
+        }
+
+        inner.ReceivedRequests.Should().HaveCount(1);
+        inner.ReceivedRequests[0].Headers.TryGetValues("Idempotency-Key", out var values).Should().BeTrue();
+        values!.First().Should().Be("order-12345");
+    }
+
+    [Fact]
+    public async Task SendAsync_OnRetry_SameIdempotencyKeyOnEveryAttempt()
+    {
+        var inner = new ScriptedHandler(
+            _ => Status(HttpStatusCode.ServiceUnavailable),
+            _ => Ok("ok"));
+        var ex = BuildExecutor(maxAttempts: 2);
+        var handler = new ResilientHttpMessageHandler(ex, "http-test") { InnerHandler = inner };
+        var http = new System.Net.Http.HttpClient(handler);
+
+        using (Correlation.IdempotencyContext.Push("order-777"))
+        {
+            await http.GetAsync("https://example.test/api");
+        }
+
+        inner.ReceivedRequests.Should().HaveCount(2);
+
+        foreach (var req in inner.ReceivedRequests)
+        {
+            req.Headers.TryGetValues("Idempotency-Key", out var values).Should().BeTrue();
+            values!.First().Should().Be("order-777");
+        }
+    }
+
+    [Fact]
+    public async Task SendAsync_WithCustomHeaderName_UsesConfiguredName()
+    {
+        var inner = new ScriptedHandler(_ => Ok("ok"));
+        var ex = BuildExecutor();
+        var options = new Configuration.HttpClientOptions
+        {
+            IdempotencyHeaderName = "X-Custom-Idempotency"
+        };
+        var handler = new ResilientHttpMessageHandler(ex, "http-test", options) { InnerHandler = inner };
+        var http = new System.Net.Http.HttpClient(handler);
+
+        using (Correlation.IdempotencyContext.Push("order-999"))
+        {
+            await http.GetAsync("https://example.test/api");
+        }
+
+        var req = inner.ReceivedRequests[0];
+        req.Headers.TryGetValues("X-Custom-Idempotency", out var values).Should().BeTrue();
+        values!.First().Should().Be("order-999");
+        req.Headers.Contains("Idempotency-Key").Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SendAsync_NoAmbientIdempotencyKey_DoesNotAddHeader()
+    {
+        var inner = new ScriptedHandler(_ => Ok("ok"));
+        var ex = BuildExecutor();
+
+        // Wrap the executor in a passthrough that does NOT push an idempotency
+        // key, to prove the handler only adds the header when the ambient is set.
+        var handler = new ResilientHttpMessageHandler(new PassthroughExecutor(), "http-test") { InnerHandler = inner };
+        var http = new System.Net.Http.HttpClient(handler);
+
+        await http.GetAsync("https://example.test/api");
+
+        inner.ReceivedRequests[0].Headers.Contains("Idempotency-Key").Should().BeFalse();
+    }
+
+    // Test double: bypasses the pipeline entirely, calling the operation
+    // directly. Used to verify handler behavior when no idempotency ambient
+    // is active.
+    private sealed class PassthroughExecutor : IResilienceExecutor
+    {
+        public Task<T> ExecuteAsync<T>(
+            string policyName,
+            Func<CancellationToken, Task<T>> operation,
+            Func<CancellationToken, Task<T>>? fallback = null,
+            string? idempotencyKey = null,
+            int? timeBudgetMs = null,
+            CancellationToken ct = default)
+            => operation(ct);
+
+        public async Task ExecuteAsync(
+            string policyName,
+            Func<CancellationToken, Task> operation,
+            Func<CancellationToken, Task>? fallback = null,
+            string? idempotencyKey = null,
+            int? timeBudgetMs = null,
+            CancellationToken ct = default)
+            => await operation(ct);
     }
 }

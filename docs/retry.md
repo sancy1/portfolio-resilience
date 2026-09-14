@@ -1,7 +1,7 @@
-ï»¿<!--
+<!--
 filepath: docs/retry.md
 package:  Portfolio.Resilience | since: v0.5.0
-purpose:  Explains the retry policy â€” backoff formula, jitter, and classifier gating.
+purpose:  Explains the retry policy — backoff formula, jitter, and classifier gating.
 -->
 
 # Retry
@@ -10,7 +10,7 @@ purpose:  Explains the retry policy â€” backoff formula, jitter, and classifier 
 
 Retry re-executes a failed operation a configurable number of times with an
 **exponential backoff** delay between attempts. If the operation eventually
-succeeds, the caller sees a success â€” the retries are invisible.
+succeeds, the caller sees a success — the retries are invisible.
 
 The retry policy is the **outermost** layer in the resilience pipeline:
 
@@ -36,7 +36,7 @@ With retry:
 - Total success rate improves by one or two nines.
 - Failures that persist past retry count are genuinely worth alerting on.
 
-**The caveat:** retry is only safe when the operation is **idempotent** â€” calling
+**The caveat:** retry is only safe when the operation is **idempotent** — calling
 it twice produces the same result as calling it once. Reads are naturally
 idempotent. Writes need explicit design (idempotency keys, unique constraints,
 upsert semantics).
@@ -88,7 +88,7 @@ where
 | 11+ | 100 * 2^10 = 102400 | **30000** (capped) | 30000..30030ms |
 
 The cap prevents the delay from growing unbounded. With `MaxAttempts = 3`, the
-total worst-case time is `100 + 200 + 400 = 700ms` plus jitter â€” well bounded.
+total worst-case time is `100 + 200 + 400 = 700ms` plus jitter — well bounded.
 
 **Attempt count:** `Attempt = 1` is the initial call (no delay). `Attempt = 2` is
 the first retry (delay 100..130ms). `Attempt = 3` is the second retry (delay
@@ -99,11 +99,11 @@ the first retry (delay 100..130ms). `Attempt = 3` is the second retry (delay
 Imagine 1000 service instances all failing at exactly the same moment (e.g. a
 brief network outage). With constant delays, all 1000 instances retry at exactly
 the same millisecond. This "thundering herd" overloads the recovering dependency
-and causes another failure â€” a self-inflicted outage.
+and causes another failure — a self-inflicted outage.
 
 Jitter spreads retries across a window. With `JitterRatio = 0.3` and `BaseDelayMs
 = 100`, retries for the same attempt are spread across a 30ms window. At 1000
-instances, that is one retry every 0.03ms on average â€” no herd.
+instances, that is one retry every 0.03ms on average — no herd.
 
 **Recommended JitterRatio: 0.2 to 0.5.** `0.0` disables jitter (useful in tests).
 `1.0` is excessive (retries spread over a full base_delay window).
@@ -115,18 +115,33 @@ categorizes the exception:
 
 | Category | Retried? | Why |
 |----------|----------|-----|
-| `Transient` | âœ… Yes | The whole point |
-| `Timeout` (from our policy) | âœ… Yes | A slow dependency may recover |
-| `Permanent` | âŒ No | Retrying validation errors wastes time |
-| `CircuitOpen` | âŒ No | The circuit will reject until `OpenDurationSeconds` passes |
-| `FallbackUsed` | âŒ No | A fallback already produced a value |
-| `Unknown` | âŒ No | Conservative default |
+| `Transient` | ? Yes | The whole point |
+| `Timeout` (from our policy) | ? Yes | A slow dependency may recover |
+| `Permanent` | ? No | Retrying validation errors wastes time |
+| `CircuitOpen` | ? No | The circuit will reject until `OpenDurationSeconds` passes |
+| `FallbackUsed` | ? No | A fallback already produced a value |
+| `Unknown` | ? No | Conservative default |
 
 **Opt-in:** `RetryOptions.RetryOnPermanent = true` retries everything, including
 permanent errors. Use only when you have a specific reason (e.g. a legacy API
 that returns 400 for transient conditions).
 
 See `docs/error-classification.md` for how each exception type is categorized.
+## Time budget interaction (v0.8.0)
+
+When the caller sets `timeBudgetMs` on `ExecuteAsync`, the retry layer caps
+itself to the remaining budget. Before scheduling each retry delay, the
+builder checks whether `delay + a floor for the attempt` fits in the
+remaining time. If not, retry stops and the last exception is surfaced -
+preserving the original exception type.
+
+    await _resilience.ExecuteAsync(
+        "auth-service",
+        ct => _http.GetAsync("/users", ct),
+        timeBudgetMs: 2000);   // total cap; retries stop when budget runs out
+
+Without a budget, retry behaves exactly as it did in v0.7.0. See
+[time-budget.md](time-budget.md) for the full contract.
 ## Configuration
 
 All retry tuning lives in `RetryOptions`, per policy:
@@ -189,9 +204,9 @@ All retry tuning lives in `RetryOptions`, per policy:
 
 - **Fast internal services** (`auth-service`): `MaxAttempts = 3`, `BaseDelayMs = 100`
 - **External APIs with rate limits**: `MaxAttempts = 5`, `BaseDelayMs = 1000` (respect 429 Retry-After if available)
-- **Database writes**: `MaxAttempts = 1` or `2` â€” writes should be idempotent, and excessive retry can duplicate work
+- **Database writes**: `MaxAttempts = 1` or `2` — writes should be idempotent, and excessive retry can duplicate work
 - **Database reads**: `MaxAttempts = 3`
-- **Redis**: `MaxAttempts = 2` â€” Redis failures are usually connection-level, not transient request-level
+- **Redis**: `MaxAttempts = 2` — Redis failures are usually connection-level, not transient request-level
 
 ## Associated files
 
@@ -204,41 +219,41 @@ All retry tuning lives in `RetryOptions`, per policy:
 
 ## Common mistakes
 
-**Mistake 1 â€” retrying non-idempotent operations.**
+**Mistake 1 — retrying non-idempotent operations.**
 An HTTP POST without an idempotency key, retried three times, might create three
 records. Retry assumes the operation is safe to repeat. If it is not, do not retry
 it (set `MaxAttempts = 0` for that policy).
 
-**Mistake 2 â€” setting MaxAttempts to a huge number.**
+**Mistake 2 — setting MaxAttempts to a huge number.**
 `MaxAttempts = 100` with exponential backoff caps at `MaxDelayMs` per retry.
 100 retries * 30s = 50 minutes. The user has long since given up. Set `MaxAttempts`
 to match the acceptable worst-case response time for the caller.
 
-**Mistake 3 â€” JitterRatio = 0.**
+**Mistake 3 — JitterRatio = 0.**
 Works fine in unit tests. In production, this is a self-inflicted thundering herd.
 Always use at least `0.1`.
 
-**Mistake 4 â€” retrying the whole HTTP call when only the body is bad.**
+**Mistake 4 — retrying the whole HTTP call when only the body is bad.**
 If the server rejects a request body with a 400, retrying the same body produces
 the same 400. The classifier correctly classifies this as `Permanent` and skips
 retry.
 
-**Mistake 5 â€” assuming retry is free.**
+**Mistake 5 — assuming retry is free.**
 Every retry costs a connection, a slot in the dependency's thread pool, and time.
-Retries should be a small number (2â€“5), not a hammer. If a dependency needs more
-than 5 retries to succeed, it is not healthy â€” fix the dependency, not the retry.
+Retries should be a small number (2–5), not a hammer. If a dependency needs more
+than 5 retries to succeed, it is not healthy — fix the dependency, not the retry.
 
 ## Testing
 
 Verified by `tests/Portfolio.Resilience.Tests/RetryPolicyBuilderTests.cs` (14 tests):
 
 - Null operation/options rejected
-- Success on first attempt â†’ no retry
-- Transient failure â†’ retried, succeeds on 2nd attempt
-- Retries exhausted â†’ last exception thrown
+- Success on first attempt ? no retry
+- Transient failure ? retried, succeeds on 2nd attempt
+- Retries exhausted ? last exception thrown
 - `Permanent` errors not retried by default
 - `RetryOnPermanent = true` retries permanent errors
-- `MaxAttempts = 0` â†’ single attempt, no retry
+- `MaxAttempts = 0` ? single attempt, no retry
 - Backoff formula: attempt 1 = base + jitter, attempt 2 = 2*base + jitter, attempt 3 = 4*base + jitter
 - Cap at `MaxDelayMs`
 - Zero jitter is exact
@@ -246,8 +261,8 @@ Verified by `tests/Portfolio.Resilience.Tests/RetryPolicyBuilderTests.cs` (14 te
 
 ## See also
 
-- [error-classification.md](error-classification.md) â€” what counts as retryable
-- [timeout.md](timeout.md) â€” how retry interacts with per-attempt timeouts
-- [circuit-breaker.md](circuit-breaker.md) â€” how retry avoids hammering a broken dependency
-- [executor.md](executor.md) â€” where retry sits in the pipeline
-- [../SPEC.md](../SPEC.md) Â§Retry â€” the normative formula
+- [error-classification.md](error-classification.md) — what counts as retryable
+- [timeout.md](timeout.md) — how retry interacts with per-attempt timeouts
+- [circuit-breaker.md](circuit-breaker.md) — how retry avoids hammering a broken dependency
+- [executor.md](executor.md) — where retry sits in the pipeline
+- [../SPEC.md](../SPEC.md) §Retry — the normative formula

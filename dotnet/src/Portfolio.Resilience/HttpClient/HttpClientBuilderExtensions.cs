@@ -1,13 +1,13 @@
-﻿// filepath: src/Portfolio.Resilience/HttpClient/HttpClientBuilderExtensions.cs
-// layer: HttpClient | package: Portfolio.Resilience | since: v0.7.0
+// filepath: src/Portfolio.Resilience/HttpClient/HttpClientBuilderExtensions.cs
+// layer: HttpClient | package: Portfolio.Resilience | since: v0.8.0
 // purpose: Adds AddResilientHandler() and AddStandardResilienceHandler() to IHttpClientBuilder.
 // -----------------------------------------------------------------------------
 // RELATIONSHIPS
 //   Implements : n/a (static extension class)
 //   Depends on : IHttpClientBuilder, IResilienceExecutor, ResilientHttpMessageHandler,
-//                StandardPolicy, ResilienceOptions, PolicyDefinition
+//                HttpClientOptions, StandardPolicy, ResilienceOptions, PolicyDefinition
 //   Used by    : every consumer service wiring an HttpClient
-//   See also   : docs/http-integration.md, SPEC.md section 3
+//   See also   : docs/http-integration.md, docs/idempotency.md, SPEC.md section 3
 // -----------------------------------------------------------------------------
 
 using Microsoft.Extensions.DependencyInjection;
@@ -25,32 +25,44 @@ namespace Portfolio.Resilience.HttpClient;
 ///     .AddResilientHandler("auth-service");
 /// </code>
 /// </summary>
-/// <remarks>
-/// For a quick-start with a built-in safe default policy, use
-/// <see cref="AddStandardResilienceHandler(IHttpClientBuilder, Action{PolicyDefinition}?)"/>
-/// instead.
-/// </remarks>
 public static class HttpClientBuilderExtensions
 {
     /// <summary>
-    /// Adds a <see cref="ResilientHttpMessageHandler"/> to the HttpClient's handler chain,
-    /// routing every request through the resilience pipeline for <paramref name="policyName"/>.
+    /// Adds a <see cref="ResilientHttpMessageHandler"/> to the HttpClient's handler
+    /// chain, routing every request through the resilience pipeline for
+    /// <paramref name="policyName"/> using default handler options.
+    /// </summary>
+    public static IHttpClientBuilder AddResilientHandler(
+        this IHttpClientBuilder builder,
+        string policyName)
+        => AddResilientHandler(builder, policyName, configure: null);
+
+    /// <summary>
+    /// Adds a <see cref="ResilientHttpMessageHandler"/> with configurable options.
     /// </summary>
     /// <param name="builder">The HttpClient builder to extend.</param>
     /// <param name="policyName">The policy name (as registered with <c>AddPolicy</c>).</param>
+    /// <param name="configure">Optional callback to configure handler options (for example, the idempotency header name).</param>
+    /// <returns>The same builder, for chaining.</returns>
     /// <exception cref="ArgumentNullException">If <paramref name="builder"/> is null.</exception>
     /// <exception cref="ArgumentException">If <paramref name="policyName"/> is null or whitespace.</exception>
     public static IHttpClientBuilder AddResilientHandler(
         this IHttpClientBuilder builder,
-        string policyName)
+        string policyName,
+        Action<HttpClientOptions>? configure)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrWhiteSpace(policyName);
 
-        builder.AddHttpMessageHandler(sp =>
+        // Build a fresh options instance at registration time, applying any
+        // user configuration, and capture it in the handler factory.
+        var options = new HttpClientOptions();
+        configure?.Invoke(options);
+
+        builder.AddHttpMessageHandler(_ =>
         {
-            var executor = sp.GetRequiredService<IResilienceExecutor>();
-            return new ResilientHttpMessageHandler(executor, policyName);
+            var executor = _.GetRequiredService<IResilienceExecutor>();
+            return new ResilientHttpMessageHandler(executor, policyName, options);
         });
 
         return builder;
@@ -59,9 +71,8 @@ public static class HttpClientBuilderExtensions
     /// <summary>
     /// Adds a <see cref="ResilientHttpMessageHandler"/> that routes every request
     /// through the built-in <c>standard</c> policy. If no policy named
-    /// <c>standard</c> is registered, one is created with safe defaults (retry +
-    /// circuit + timeout). If the caller has already registered their own
-    /// <c>standard</c> policy, that policy wins and no defaults are applied.
+    /// <c>standard</c> is registered, one is created with safe defaults
+    /// (retry + circuit + timeout).
     /// </summary>
     /// <param name="builder">The HttpClient builder to extend.</param>
     /// <param name="configure">
@@ -76,14 +87,11 @@ public static class HttpClientBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
 
-        // Register a post-configuration action that installs the standard policy
-        // at resolve time, unless the caller has already defined one.
         builder.Services.AddSingleton<Action<ResilienceOptions>>(_ =>
             options =>
             {
                 if (options.Policies.ContainsKey(StandardPolicy.Name))
                 {
-                    // User's registration wins.
                     return;
                 }
 

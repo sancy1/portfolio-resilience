@@ -1,4 +1,4 @@
-﻿// filepath: src/Portfolio.Resilience/Configuration/LoggingOptions.cs
+// filepath: src/Portfolio.Resilience/Configuration/LoggingOptions.cs
 // layer: Configuration | package: Portfolio.Resilience | since: v0.6.0
 // purpose: Per-event-type toggles for which resilience events are emitted.
 // -----------------------------------------------------------------------------
@@ -66,4 +66,12 @@ public sealed class LoggingOptions
     /// <c>hedge_cancelled</c>). Default: true.
     /// </summary>
     public bool EmitHedgeEvents { get; set; } = true;
+
+    /// <summary>
+    /// When true, every event runs through an <see cref="Abstractions.IEventScrubber"/>
+    /// (the default PCI scrubber unless a custom one is registered) before any
+    /// sink sees it. Masks PAN, CVV, and SSN patterns in messages and metadata.
+    /// Default: false - opt-in, so existing consumers see no change in log output.
+    /// </summary>
+    public bool ScrubSensitiveData { get; set; } = false;
 }

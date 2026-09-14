@@ -1,6 +1,6 @@
 ﻿<!--
 filepath: docs/README.md
-package:  Portfolio.Resilience | since: v0.6.0
+package:  Portfolio.Resilience | since: v0.8.0
 purpose:  Index of all documentation for the resilience package.
 -->
 
@@ -57,9 +57,12 @@ sections will differ.
 | [analyzers.md](analyzers.md) | Roslyn analyzers — compile-time resilience checks |
 | [executor.md](executor.md) | The `IResilienceExecutor` entry point, call-site patterns |
 | [http-integration.md](http-integration.md) | DelegatingHandler, named clients, per-service policies |
+| [idempotency.md](idempotency.md) | Idempotency key propagation for retries and hedged writes |
+| [pci-scrubbing.md](pci-scrubbing.md) | Sensitive-data masking before events reach a log sink |
+| [time-budget.md](time-budget.md) | Total wall-clock budget enforcement across every layer |
 | [api-stability.md](api-stability.md) | The frozen public API surface and versioning policy |
 
-Every doc listed above is **written and current as of v0.6.0**. Code and doc
+Every doc listed above is **written and current as of v0.8.0**. Code and doc
 ship together — a doc never describes a feature the library does not have, and
 the library never has a feature without a doc.
 
@@ -132,7 +135,7 @@ against `SPEC.md`.
 
 ## Current test suite
 
-**273 tests, 0 failures, 0 warnings.**
+**515 tests, 0 failures, 0 warnings.**
 
 Run them with:
 
@@ -140,5 +143,9 @@ Run them with:
     dotnet test Portfolio.Resilience.slnx
 
 Coverage spans every sink, the correlation primitive, the error classifier,
-each policy builder (retry, timeout, circuit, rate limiter, bulkhead), the
-composite pipeline, the registry, the executor, and the HTTP handler.
+each policy builder (retry, timeout, circuit, rate limiter, bulkhead,
+hedging), the composite pipeline, the composition API, the registry, the
+executor, the HTTP handler, the standard handler, the OpenTelemetry sinks,
+the Roslyn analyzers, and the four v0.8.0 features (idempotency key
+propagation, PCI-safe event scrubbing, timeout budget propagation, and the
+payment-safe pipeline preset).

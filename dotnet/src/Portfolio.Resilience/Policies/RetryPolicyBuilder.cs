@@ -1,4 +1,4 @@
-﻿// filepath: src/Portfolio.Resilience/Policies/RetryPolicyBuilder.cs
+// filepath: src/Portfolio.Resilience/Policies/RetryPolicyBuilder.cs
 // layer: Policies | package: Portfolio.Resilience | since: v0.7.0
 // purpose: Executes an operation with exponential-backoff retry, using the error classifier to gate retries.
 // -----------------------------------------------------------------------------
@@ -11,6 +11,7 @@
 
 using Portfolio.Resilience.Abstractions;
 using Portfolio.Resilience.Configuration;
+using Portfolio.Resilience.Correlation;
 using Portfolio.Resilience.Errors;
 
 namespace Portfolio.Resilience.Policies;
@@ -79,6 +80,21 @@ public sealed class RetryPolicyBuilder : IResiliencePolicy
             catch (Exception ex) when (attempt < maxAttempts && ShouldRetry(ex, options))
             {
                 var delay = CalculateDelay(attempt, options);
+
+                // Time-budget check: if the next attempt cannot fit in the
+                // remaining budget, stop retrying and surface the last error.
+                // When no budget scope is active (RemainingMs is null), the
+                // pipeline behaves exactly as in v0.7.0.
+                var remaining = TimeBudgetContext.RemainingMs;
+                if (remaining is not null)
+                {
+                    var estimatedNextAttemptMs = options.BaseDelayMs;
+                    if (remaining.Value < delay.TotalMilliseconds + estimatedNextAttemptMs)
+                    {
+                        throw;
+                    }
+                }
+
                 await _delay(delay, ct).ConfigureAwait(false);
             }
             // Any other exception (or last attempt) propagates out.

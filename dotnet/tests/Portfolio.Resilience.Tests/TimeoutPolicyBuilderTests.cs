@@ -1,12 +1,12 @@
-﻿// filepath: tests/Portfolio.Resilience.Tests/TimeoutPolicyBuilderTests.cs
+// filepath: tests/Portfolio.Resilience.Tests/TimeoutPolicyBuilderTests.cs
 // layer: Tests | package: Portfolio.Resilience.Tests | since: v0.2.0
 // purpose: Verifies TimeoutPolicyBuilder enforces its ceiling and distinguishes caller cancellation.
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // RELATIONSHIPS
 //   Tests      : TimeoutPolicyBuilder (Policies/TimeoutPolicyBuilder.cs)
 //   Depends on : TimeoutOptions, ResilienceException, xUnit, FluentAssertions
 //   See also   : docs/timeout.md
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 using FluentAssertions;
 using Portfolio.Resilience.Configuration;
@@ -125,7 +125,7 @@ public sealed class TimeoutPolicyBuilderTests
     [Fact]
     public async Task ExecuteAsync_ExactlyAtCeiling_MaySucceed()
     {
-        // Not a strict boundary test — just confirms operations near the
+        // Not a strict boundary test � just confirms operations near the
         // ceiling complete when they finish in time.
         var builder = new TimeoutPolicyBuilder();
 
@@ -139,5 +139,78 @@ public sealed class TimeoutPolicyBuilderTests
             "p");
 
         result.Should().Be(1);
+    }
+    // ------------------------------------------------------------------------
+    // v0.8.0 - Time budget caps the configured timeout
+    // ------------------------------------------------------------------------
+
+    [Fact]
+    public async Task ExecuteAsync_WithBudgetShorterThanTimeout_CapsByBudget()
+    {
+        var builder = new TimeoutPolicyBuilder();
+
+        // Budget is 30ms; configured timeout is 5000ms. The effective
+        // ceiling must be ~30ms, so the 200ms operation times out.
+        using var _ = Portfolio.Resilience.Correlation.TimeBudgetContext.Push(30);
+
+        Func<Task> act = () => builder.ExecuteAsync(
+            async ct => { await Task.Delay(200, ct); return 1; },
+            new TimeoutOptions { TimeoutMs = 5000 },
+            "p");
+
+        var ex = await act.Should().ThrowAsync<ResilienceException>();
+        ex.Which.Category.Should().Be(ResilienceErrorCategory.Timeout);
+        // The metadata timeout_ms should reflect the effective (capped) value.
+        ((int)ex.Which.Metadata["timeout_ms"]!).Should().BeLessThan(5000);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithBudgetLargerThanTimeout_TimeoutWins()
+    {
+        var builder = new TimeoutPolicyBuilder();
+
+        // Budget is 5000ms; configured timeout is 50ms. The effective
+        // ceiling is 50ms - budget does not extend a shorter configured value.
+        using var _ = Portfolio.Resilience.Correlation.TimeBudgetContext.Push(5000);
+
+        var result = await builder.ExecuteAsync(
+            async ct => { await Task.Delay(10, ct); return 42; },
+            new TimeoutOptions { TimeoutMs = 50 },
+            "p");
+
+        result.Should().Be(42);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_NoBudgetScope_UsesConfiguredTimeout()
+    {
+        var builder = new TimeoutPolicyBuilder();
+
+        // No budget scope - v0.7.0 behavior.
+        var result = await builder.ExecuteAsync(
+            async ct => { await Task.Delay(10, ct); return 42; },
+            new TimeoutOptions { TimeoutMs = 500 },
+            "p");
+
+        result.Should().Be(42);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_BudgetExhausted_ThrowsImmediately()
+    {
+        var builder = new TimeoutPolicyBuilder();
+
+        // Budget of 1ms, then sleep enough that the operation is called
+        // with a zero-or-negative remaining budget.
+        using var _ = Portfolio.Resilience.Correlation.TimeBudgetContext.Push(5);
+        await Task.Delay(20);
+
+        Func<Task> act = () => builder.ExecuteAsync(
+            ct => Task.FromResult(1),
+            new TimeoutOptions { TimeoutMs = 5000 },
+            "p");
+
+        var ex = await act.Should().ThrowAsync<ResilienceException>();
+        ex.Which.Category.Should().Be(ResilienceErrorCategory.Timeout);
     }
 }

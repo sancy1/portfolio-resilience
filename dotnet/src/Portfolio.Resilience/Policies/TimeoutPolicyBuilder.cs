@@ -1,4 +1,4 @@
-﻿// filepath: src/Portfolio.Resilience/Policies/TimeoutPolicyBuilder.cs
+// filepath: src/Portfolio.Resilience/Policies/TimeoutPolicyBuilder.cs
 // layer: Policies | package: Portfolio.Resilience | since: v0.7.0
 // purpose: Wraps an async operation with a timeout ceiling that throws a typed ResilienceException.
 // -----------------------------------------------------------------------------
@@ -11,6 +11,7 @@
 
 using Portfolio.Resilience.Abstractions;
 using Portfolio.Resilience.Configuration;
+using Portfolio.Resilience.Correlation;
 using Portfolio.Resilience.Errors;
 
 namespace Portfolio.Resilience.Policies;
@@ -51,16 +52,51 @@ public sealed class TimeoutPolicyBuilder : IResiliencePolicy
         ArgumentNullException.ThrowIfNull(options);
         ArgumentException.ThrowIfNullOrWhiteSpace(policyName);
 
-        // Timeout disabled - run directly with the caller's token.
-        if (options.TimeoutMs <= 0)
+        // Determine the effective ceiling. When a time-budget scope is active,
+        // the effective ceiling is min(configured, remaining budget). When no
+        // budget is active, the configured value is used as-is (v0.7.0 behavior).
+        var remaining = TimeBudgetContext.RemainingMs;
+        int effectiveTimeoutMs;
+
+        if (remaining is not null)
         {
+            // Budget is active. Cap by remaining budget. When the configured
+            // timeout is positive, take the smaller value; when it is disabled
+            // (<= 0), the budget becomes the caller's true SLA.
+            var configured = options.TimeoutMs > 0 ? options.TimeoutMs : int.MaxValue;
+            var remainingMs = (int)Math.Min(int.MaxValue, Math.Max(0, remaining.Value));
+
+            if (remainingMs <= 0)
+            {
+                // Budget already exhausted - no room for the operation.
+                throw new ResilienceException(
+                    message: $"Time budget exhausted before operation could run (policy '{policyName}').",
+                    policyName: policyName,
+                    category: ResilienceErrorCategory.Timeout,
+                    attemptsMade: 0,
+                    totalDuration: TimeSpan.Zero,
+                    metadata: new Dictionary<string, object?>
+                    {
+                        ["remaining_ms"] = remaining.Value
+                    });
+            }
+
+            effectiveTimeoutMs = Math.Min(configured, remainingMs);
+        }
+        else if (options.TimeoutMs <= 0)
+        {
+            // Timeout disabled and no budget - run directly with the caller's token.
             return await operation(ct).ConfigureAwait(false);
+        }
+        else
+        {
+            effectiveTimeoutMs = options.TimeoutMs;
         }
 
         using var timeoutCts = new CancellationTokenSource();
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
 
-        timeoutCts.CancelAfter(options.TimeoutMs);
+        timeoutCts.CancelAfter(effectiveTimeoutMs);
 
         var startedAt = DateTime.UtcNow;
 
@@ -80,14 +116,14 @@ public sealed class TimeoutPolicyBuilder : IResiliencePolicy
             var elapsed = DateTime.UtcNow - startedAt;
 
             throw new ResilienceException(
-                message: $"Operation exceeded timeout of {options.TimeoutMs}ms (policy '{policyName}').",
+                message: $"Operation exceeded timeout of {effectiveTimeoutMs}ms (policy '{policyName}').",
                 policyName: policyName,
                 category: ResilienceErrorCategory.Timeout,
                 attemptsMade: 1,
                 totalDuration: elapsed,
                 metadata: new Dictionary<string, object?>
                 {
-                    ["timeout_ms"] = options.TimeoutMs,
+                    ["timeout_ms"] = effectiveTimeoutMs,
                     ["elapsed_ms"] = elapsed.TotalMilliseconds
                 });
         }

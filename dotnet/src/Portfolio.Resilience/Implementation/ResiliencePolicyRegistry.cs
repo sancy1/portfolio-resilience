@@ -1,4 +1,4 @@
-﻿// filepath: src/Portfolio.Resilience/Implementation/ResiliencePolicyRegistry.cs
+// filepath: src/Portfolio.Resilience/Implementation/ResiliencePolicyRegistry.cs
 // layer: Implementation | package: Portfolio.Resilience | since: v0.6.0
 // purpose: Resolves PolicyDefinitions by name; validates new policies once and reports warnings.
 // -----------------------------------------------------------------------------
@@ -25,7 +25,7 @@ namespace Portfolio.Resilience.Implementation;
 /// <c>RateLimiter.Validate</c> and <c>Bulkhead.Validate</c> and forwards any
 /// warnings to the optional <c>warn</c> delegate. Subsequent resolves of the
 /// same policy skip validation. Validation never throws and never blocks
-/// resolution — it is diagnostic only.
+/// resolution � it is diagnostic only.
 /// </remarks>
 public sealed class ResiliencePolicyRegistry : IResiliencePolicyRegistry
 {
@@ -100,6 +100,11 @@ public sealed class ResiliencePolicyRegistry : IResiliencePolicyRegistry
         {
             _warn(warning);
         }
+
+        foreach (var warning in definition.Hedging.Validate(policyName))
+        {
+            _warn(warning);
+        }
     }
 
     private PolicyDefinition BuildDefaultFor(string policyName)
@@ -148,7 +153,11 @@ public sealed class ResiliencePolicyRegistry : IResiliencePolicyRegistry
                 EmitCallFailed = source.Logging.EmitCallFailed,
                 EmitCircuitEvents = source.Logging.EmitCircuitEvents,
                 EmitFallbackUsed = source.Logging.EmitFallbackUsed,
-                EmitTimeoutBreached = source.Logging.EmitTimeoutBreached
+                EmitTimeoutBreached = source.Logging.EmitTimeoutBreached,
+                EmitRateLimited = source.Logging.EmitRateLimited,
+                EmitBulkheadRejected = source.Logging.EmitBulkheadRejected,
+                EmitHedgeEvents = source.Logging.EmitHedgeEvents,
+                ScrubSensitiveData = source.Logging.ScrubSensitiveData
             },
             RateLimiter = new RateLimiterOptions
             {

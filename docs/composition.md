@@ -1,4 +1,4 @@
-ï»¿<!--
+<!--
 filepath: docs/composition.md
 package:  Portfolio.Resilience | since: v0.7.0
 purpose:  Explains how to compose a custom resilience pipeline in any order.
@@ -12,14 +12,14 @@ Policy composition lets you build a resilience pipeline in **any order you
 want**, from **any subset** of the available layers. Instead of the library's
 fixed default:
 
-    RateLimiter -> Bulkhead -> Retry -> Circuit -> Timeout -> Operation
+    RateLimiter -> Bulkhead -> Hedging -> Retry -> Circuit -> Timeout -> Operation
 
 you decide the shape:
 
     var pipeline = ResiliencePipeline.Wrap(retry, circuit, timeout);
 
 Each layer implements `IResiliencePolicy`. The pipeline executes them
-outermost-first â€” the first layer you add is the outermost.
+outermost-first — the first layer you add is the outermost.
 
 ## Why it exists
 
@@ -27,11 +27,11 @@ The library's default pipeline order is a sensible starting point for most
 services. But real systems have specific needs:
 
 - **Fallback outermost.** If the caller provided a fallback, it should run
-  after every other layer has given up â€” not inside retry.
+  after every other layer has given up — not inside retry.
 - **Hedging inside retry.** Hedged attempts should be retried as a group,
   not retried individually.
 - **Skip the circuit.** A dependency that never fails systematically does not
-  need circuit protection â€” and the circuit's state machine adds small overhead.
+  need circuit protection — and the circuit's state machine adds small overhead.
 - **Per-call composition.** The same operation may need different pipeline
   shapes depending on context (production vs. background batch).
 
@@ -50,7 +50,7 @@ Hard-coded order blocks all of these. Composition removes that limit.
 
 **No:**
 
-- The default order works for you â€” use `AddPortfolioResilience` and the
+- The default order works for you — use `AddPortfolioResilience` and the
   built-in pipeline. Composition is a power tool, not a requirement.
 
 ## How it works
@@ -60,7 +60,7 @@ Hard-coded order blocks all of these. Composition removes that limit.
 There are two ways to build a custom pipeline. **They are equally valid.**
 Pick the one that reads better for your use case.
 
-**1. `ResiliencePipeline.Wrap(...)` â€” direct, minimal**
+**1. `ResiliencePipeline.Wrap(...)` — direct, minimal**
 
     var pipeline = ResiliencePipeline.Wrap(
         rateLimiter,
@@ -78,7 +78,7 @@ Pick the one that reads better for your use case.
 Five layers, one line, in the order you want. **Use this when the shape is
 static and simple.**
 
-**2. `ResiliencePipelineBuilder` â€” fluent, expressive**
+**2. `ResiliencePipelineBuilder` — fluent, expressive**
 
     var pipeline = new ResiliencePipelineBuilder()
         .WithName("external-api-pipeline")
@@ -133,13 +133,13 @@ still enable/configure features the same way:
 The pipeline's `ExecuteAsync` takes the `PolicyDefinition` alongside the
 operation. Each layer reads what it needs.
 
-**A layer that is not in the pipeline is not executed â€” even if its options
+**A layer that is not in the pipeline is not executed — even if its options
 are enabled.** This is deliberate: `ResiliencePipeline` does what it is told
 and no more. To enforce "enabled implies present," use `CompositePolicyBuilder`
 (the default pipeline), which throws `InvalidOperationException` when a policy
 enables a feature whose builder was not wired.
 
-## Quick start â€” side by side
+## Quick start — side by side
 
 Both examples below produce the same pipeline. Pick whichever you prefer.
 
@@ -170,9 +170,9 @@ Both produce the same behavior. The builder adds a `Name` and lets you use
 
 ## Real-world patterns
 
-### Pattern 1 â€” Fallback outermost
+### Pattern 1 — Fallback outermost
 
-Fallback is not a layer in this library â€” it is a per-call argument to
+Fallback is not a layer in this library — it is a per-call argument to
 `IResilienceExecutor.ExecuteAsync`. But with composition, you can build a
 pipeline that stops retrying earlier and lets the caller's fallback run sooner:
 
@@ -190,10 +190,10 @@ pipeline that stops retrying earlier and lets the caller's fallback run sooner:
 More granular fallback handling becomes possible when you own the outer
 control flow.
 
-### Pattern 2 â€” No circuit for a stable dependency
+### Pattern 2 — No circuit for a stable dependency
 
 The circuit adds small overhead (state lookup, lock, timestamp comparison).
-For a dependency that never fails systematically â€” say, a local cache â€” you
+For a dependency that never fails systematically — say, a local cache — you
 can skip it:
 
     var pipeline = ResiliencePipeline.Wrap(retry, timeout);
@@ -201,17 +201,17 @@ can skip it:
 Two layers. Cleaner. Slightly faster. Same resilience for the transient
 failures the cache actually experiences.
 
-### Pattern 3 â€” Circuit outermost for fail-fast
+### Pattern 3 — Circuit outermost for fail-fast
 
 For a dependency that fails hard when it fails, put the circuit outermost so
 a rejection is fast:
 
     var pipeline = ResiliencePipeline.Wrap(circuit, retry, timeout);
 
-A call while the circuit is Open returns in microseconds â€” no retry, no
+A call while the circuit is Open returns in microseconds — no retry, no
 timeout, no resource use.
 
-### Pattern 4 â€” Configuration-driven shape
+### Pattern 4 — Configuration-driven shape
 
 Different environments need different pipelines. `AddIf(...)` handles this
 without duplicating the chain:
@@ -263,10 +263,78 @@ Compose it with anything else:
 - Must be thread-safe. The same instance may be invoked concurrently.
 - Must honor the `ct` cancellation token.
 - Must call `operation` (or not) exactly once. Calling it multiple times is
-  what retry and hedging layers do â€” a generic layer should not.
+  what retry and hedging layers do — a generic layer should not.
 - When the layer's feature is disabled in `definition`, the layer should
   pass through to `operation` without adding behavior.
 
+## Payment-safe pipeline preset (v0.8.0)
+
+The library ships a preset factory that enforces the **safe order** for
+critical write paths - charges, refunds, orders, event publishes - where an
+accidental multi-attempt race would be harmful.
+
+    var pipeline = ResiliencePipeline.WithPaymentSafeDefaults();
+
+The preset returns a pipeline with these six layers, in this order:
+
+    RateLimiter -> Bulkhead -> Circuit -> Hedging -> Retry -> Timeout -> Operation
+
+### Why this differs from the default
+
+The default pipeline (`CompositePolicyBuilder`) uses:
+
+    RateLimiter -> Bulkhead -> Hedging -> Retry -> Circuit -> Timeout -> Operation
+
+The preset moves **Circuit outside Hedging and Retry**. This matters on
+writes: a circuit rejection must not spawn additional attempts. In the
+default order, a circuit failure is caught by retry (which decides whether
+to retry) inside a hedging race (which may have already fired parallel
+attempts). The preset removes that risk by putting the circuit first among
+the request-shaping layers.
+
+The preset also keeps **RateLimiter and Bulkhead outermost**, so capacity
+caps apply before retry can multiply load. This matches the default order.
+
+### Enforces order, not enablement
+
+Each layer honors its own flag in the `PolicyDefinition`:
+
+- `Hedging.Enabled = false` ? the hedging layer passes through; no parallel attempts fire.
+- `RateLimiter.Enabled = false` ? the rate limiter passes through.
+- `Bulkhead.Enabled = false` ? the bulkhead passes through.
+- `Retry.MaxAttempts = 0` ? retry runs the operation once.
+- `Timeout.TimeoutMs = 0` ? timeout is disabled.
+- Circuit has no `Enabled` flag; it is always active but honors
+  `FailureThreshold` and `OnlyCountTransient`.
+
+A policy can therefore disable hedging entirely on a charge endpoint and
+still use the preset - it just won't race.
+
+### When to use the preset
+
+**Yes:**
+
+- Any HTTP POST that creates a resource and is not idempotent
+- Any write path with an SLA where latency amplification is dangerous
+- Charge, refund, capture, order-creation, event-publish endpoints
+- Any path where "this ran twice" would be a business incident
+
+**No:**
+
+- General microservice reads (use the default pipeline)
+- Operations where hedging is genuinely desired and safe (idempotent reads)
+- Any call site that does not need the reorder
+
+### Customizing layer instances
+
+The preset takes optional layer instances:
+
+    var pipeline = ResiliencePipeline.WithPaymentSafeDefaults(
+        circuit: myCircuitBuilder,
+        timeout: myTimeoutBuilder);
+
+Any null argument becomes a fresh instance. This is useful when you want to
+share a circuit with a health endpoint or reuse a configured retry builder.
 ## Configuration
 
 There is no dedicated configuration section for composition. The pipeline
@@ -274,7 +342,7 @@ shape is decided **in code**, at registration time. The per-policy options
 (retry attempts, rate limits, etc.) still come from `PolicyDefinition`.
 
 **Binding from `appsettings.json` is not supported for pipeline shape.**
-Composition is structural â€” a code decision, not a configuration one. If you
+Composition is structural — a code decision, not a configuration one. If you
 need environment-dependent shape, use `AddIf(env.IsProduction(), ...)` as in
 Pattern 4.
 
@@ -294,7 +362,7 @@ Pattern 4.
 
 ## Common mistakes
 
-**Mistake 1 â€” expecting `Wrap` to enforce enabled-but-missing.**
+**Mistake 1 — expecting `Wrap` to enforce enabled-but-missing.**
 
 `ResiliencePipeline` executes the layers it is given. It does not know what
 the `PolicyDefinition` *wants* to be enabled. If you enable the rate limiter
@@ -304,29 +372,29 @@ rate limiting happens.
 **Use `CompositePolicyBuilder` if you want fail-loud behavior.** It validates
 that everything enabled is present, then composes the default pipeline.
 
-**Mistake 2 â€” assuming the layers run in parallel.**
+**Mistake 2 — assuming the layers run in parallel.**
 
 They run sequentially, outermost-first. Each layer awaits the next. This is
-not hedging â€” that is a specific parallel-execution feature (v0.7.0, separate
+not hedging — that is a specific parallel-execution feature (v0.7.0, separate
 builder).
 
-**Mistake 3 â€” sharing a builder across threads.**
+**Mistake 3 — sharing a builder across threads.**
 
 `ResiliencePipelineBuilder` is mutable and not thread-safe. Create one,
 configure it, call `Build()`, and share the resulting **pipeline** (which is
 immutable and thread-safe). Never share the builder itself.
 
-**Mistake 4 â€” reordering layers without testing.**
+**Mistake 4 — reordering layers without testing.**
 
 Layer order is significant. `Retry -> RateLimiter` and `RateLimiter -> Retry`
 produce different behavior under load. See the test
 `Wrap_RateLimiterRejectsBeforeRetryRuns` in `CompositionTests.cs` for a
 concrete demonstration.
 
-**Mistake 5 â€” building an empty pipeline.**
+**Mistake 5 — building an empty pipeline.**
 
 `Build()` throws `InvalidOperationException` when no layers have been added.
-An empty pipeline would just call the operation directly â€” meaningless.
+An empty pipeline would just call the operation directly — meaningless.
 
 ## Testing
 
@@ -341,18 +409,18 @@ Verified by `tests/Portfolio.Resilience.Tests/ResiliencePipelineTests.cs`
 - `Builder.Add`, `AddIf(true, ...)`, `AddIf(false, ...)`
 - `Builder.WithName` stores the name
 - `Builder.Build` throws on empty
-- **`Wrap_RateLimiterRejectsBeforeRetryRuns`** â€” a rejected call is not retried
-- **`Wrap_RetryOuterThanRateLimiter_RetryConsumesMultiplePermits`** â€” retry
+- **`Wrap_RateLimiterRejectsBeforeRetryRuns`** — a rejected call is not retried
+- **`Wrap_RetryOuterThanRateLimiter_RetryConsumesMultiplePermits`** — retry
   attempts each consume a permit when rate limiter is innermost
 - Full 5-layer pipeline executes correctly end-to-end
 - `CompositePolicyBuilder` still throws when a feature is enabled but missing
 
 ## See also
 
-- [executor.md](executor.md) â€” the default pipeline entry point
-- [retry.md](retry.md) â€” the retry layer
-- [circuit-breaker.md](circuit-breaker.md) â€” the circuit layer
-- [timeout.md](timeout.md) â€” the timeout layer
-- [rate-limiter.md](rate-limiter.md) â€” the rate limiter layer
-- [bulkhead.md](bulkhead.md) â€” the bulkhead layer
-- [../SPEC.md](../SPEC.md) section 14 â€” the normative contract
+- [executor.md](executor.md) — the default pipeline entry point
+- [retry.md](retry.md) — the retry layer
+- [circuit-breaker.md](circuit-breaker.md) — the circuit layer
+- [timeout.md](timeout.md) — the timeout layer
+- [rate-limiter.md](rate-limiter.md) — the rate limiter layer
+- [bulkhead.md](bulkhead.md) — the bulkhead layer
+- [../SPEC.md](../SPEC.md) section 14 — the normative contract

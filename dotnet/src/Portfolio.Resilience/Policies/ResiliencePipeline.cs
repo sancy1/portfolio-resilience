@@ -1,4 +1,4 @@
-﻿// filepath: src/Portfolio.Resilience/Policies/ResiliencePipeline.cs
+// filepath: src/Portfolio.Resilience/Policies/ResiliencePipeline.cs
 // layer: Policies | package: Portfolio.Resilience | since: v0.7.0
 // purpose: Composes an ordered sequence of IResiliencePolicy layers into a single pipeline.
 // -----------------------------------------------------------------------------
@@ -77,6 +77,73 @@ public sealed class ResiliencePipeline
     /// <returns>A new <see cref="ResiliencePipeline"/>.</returns>
     public static ResiliencePipeline Wrap(params IResiliencePolicy[] layers)
         => new(layers);
+
+    /// <summary>
+    /// Creates a pipeline with the payment-safe layer order:
+    /// <code>
+    /// RateLimiter -> Bulkhead -> Circuit -> Hedging -> Retry -> Timeout -> Operation
+    /// </code>
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The preset enforces <b>order</b>, not enablement. Each layer honors the
+    /// corresponding flag in the caller's <see cref="Configuration.PolicyDefinition"/>:
+    /// a policy with <c>Hedging.Enabled = false</c> will not hedge even though
+    /// the hedging layer is present in the pipeline.
+    /// </para>
+    /// <para>
+    /// <b>Why the order matters.</b> A mis-ordered pipeline such as
+    /// <c>Wrap(retry, hedge, circuit, timeout)</c> races multiple retried and
+    /// hedged attempts against a charge endpoint - catastrophic for
+    /// non-idempotent writes. The preset places the circuit <i>outside</i>
+    /// hedging and retry, so a fail-fast rejection from the circuit never
+    /// spawns additional attempts. It also places the rate limiter and bulkhead
+    /// outermost, so capacity caps apply before retry can multiply load.
+    /// </para>
+    /// <para>
+    /// For most services, the default pipeline
+    /// (<c>RateLimiter -> Bulkhead -> Hedging -> Retry -> Circuit -> Timeout</c>)
+    /// remains the right choice. Use this preset on any critical write path -
+    /// charges, orders, refunds, event publishes - where an accidental
+    /// multi-attempt race would be harmful.
+    /// </para>
+    /// </remarks>
+    /// <returns>A new pipeline with the safe order and fresh layer instances.</returns>
+    public static ResiliencePipeline WithPaymentSafeDefaults()
+        => WithPaymentSafeDefaults(
+            rateLimiter: new RateLimiterPolicyBuilder(),
+            bulkhead: new BulkheadPolicyBuilder(),
+            circuit: new CircuitPolicyBuilder(),
+            hedging: new HedgingPolicyBuilder(),
+            retry: new RetryPolicyBuilder(),
+            timeout: new TimeoutPolicyBuilder());
+
+    /// <summary>
+    /// Creates a pipeline with the payment-safe layer order, using the
+    /// supplied layer instances. Any null argument is replaced with a fresh
+    /// instance, so callers may supply only the layers they want to customize.
+    /// </summary>
+    /// <param name="rateLimiter">Optional rate limiter. Fresh instance if null.</param>
+    /// <param name="bulkhead">Optional bulkhead. Fresh instance if null.</param>
+    /// <param name="circuit">Optional circuit. Fresh instance if null.</param>
+    /// <param name="hedging">Optional hedging. Fresh instance if null.</param>
+    /// <param name="retry">Optional retry. Fresh instance if null.</param>
+    /// <param name="timeout">Optional timeout. Fresh instance if null.</param>
+    /// <returns>A new pipeline with the safe order.</returns>
+    public static ResiliencePipeline WithPaymentSafeDefaults(
+        RateLimiterPolicyBuilder? rateLimiter = null,
+        BulkheadPolicyBuilder? bulkhead = null,
+        CircuitPolicyBuilder? circuit = null,
+        HedgingPolicyBuilder? hedging = null,
+        RetryPolicyBuilder? retry = null,
+        TimeoutPolicyBuilder? timeout = null)
+        => new(
+            rateLimiter ?? new RateLimiterPolicyBuilder(),
+            bulkhead ?? new BulkheadPolicyBuilder(),
+            circuit ?? new CircuitPolicyBuilder(),
+            hedging ?? new HedgingPolicyBuilder(),
+            retry ?? new RetryPolicyBuilder(),
+            timeout ?? new TimeoutPolicyBuilder());
 
     /// <summary>The ordered layers, outermost first.</summary>
     public IReadOnlyList<IResiliencePolicy> Layers => _layers;

@@ -1,4 +1,4 @@
-﻿// filepath: tests/Portfolio.Resilience.Tests/ResiliencePipelineTests.cs
+// filepath: tests/Portfolio.Resilience.Tests/ResiliencePipelineTests.cs
 // layer: Tests | package: Portfolio.Resilience.Tests | since: v0.7.0
 // purpose: Verifies pipeline composition order, guards, and the fluent builder.
 // -----------------------------------------------------------------------------
@@ -90,7 +90,7 @@ public sealed class ResiliencePipelineTests
     }
 
     // ------------------------------------------------------------------------
-    // Execution — order and pass-through
+    // Execution � order and pass-through
     // ------------------------------------------------------------------------
 
     [Fact]
@@ -232,5 +232,104 @@ public sealed class ResiliencePipelineTests
         await pipeline.ExecuteAsync("p", _ => Task.FromResult(1), definition);
 
         order.Should().Equal("a", "b", "c");
+    }
+    // ------------------------------------------------------------------------
+    // v0.8.0 - WithPaymentSafeDefaults()
+    // ------------------------------------------------------------------------
+
+    [Fact]
+    public void WithPaymentSafeDefaults_ReturnsSixLayers()
+    {
+        var pipeline = ResiliencePipeline.WithPaymentSafeDefaults();
+
+        pipeline.Layers.Should().HaveCount(6);
+    }
+
+    [Fact]
+    public void WithPaymentSafeDefaults_HasSafeOrder()
+    {
+        var pipeline = ResiliencePipeline.WithPaymentSafeDefaults();
+
+        pipeline.Layers[0].Should().BeOfType<RateLimiterPolicyBuilder>();
+        pipeline.Layers[1].Should().BeOfType<BulkheadPolicyBuilder>();
+        pipeline.Layers[2].Should().BeOfType<CircuitPolicyBuilder>();
+        pipeline.Layers[3].Should().BeOfType<HedgingPolicyBuilder>();
+        pipeline.Layers[4].Should().BeOfType<RetryPolicyBuilder>();
+        pipeline.Layers[5].Should().BeOfType<TimeoutPolicyBuilder>();
+    }
+
+    [Fact]
+    public void WithPaymentSafeDefaults_UsesSuppliedInstances()
+    {
+        var supplied = new CircuitPolicyBuilder();
+        var pipeline = ResiliencePipeline.WithPaymentSafeDefaults(circuit: supplied);
+
+        pipeline.Layers[2].Should().BeSameAs(supplied);
+    }
+
+    [Fact]
+    public async Task WithPaymentSafeDefaults_AllLayersDisabled_PassesThrough()
+    {
+        // All six layers present, all features disabled in the definition.
+        // The pipeline should call the operation exactly once.
+        var pipeline = ResiliencePipeline.WithPaymentSafeDefaults();
+        var calls = 0;
+
+        var definition = new PolicyDefinition
+        {
+            Name = "p",
+            RateLimiter = new RateLimiterOptions { Enabled = false },
+            Bulkhead = new BulkheadOptions { Enabled = false },
+            Hedging = new HedgingOptions { Enabled = false },
+            Retry = new RetryOptions { MaxAttempts = 0 },
+            Timeout = new TimeoutOptions { TimeoutMs = 0 }
+        };
+
+        var result = await pipeline.ExecuteAsync("p", _ =>
+        {
+            calls++;
+            return Task.FromResult(42);
+        }, definition);
+
+        result.Should().Be(42);
+        calls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task WithPaymentSafeDefaults_HedgingDisabled_DoesNotRace()
+    {
+        // Even though the hedging layer is in the pipeline, Enabled = false
+        // means only one attempt runs. This is the core safety guarantee.
+        var pipeline = ResiliencePipeline.WithPaymentSafeDefaults();
+        var calls = 0;
+
+        var definition = new PolicyDefinition
+        {
+            Name = "p",
+            RateLimiter = new RateLimiterOptions { Enabled = false },
+            Bulkhead = new BulkheadOptions { Enabled = false },
+            Hedging = new HedgingOptions { Enabled = false, MaxAttempts = 3 },
+            Retry = new RetryOptions { MaxAttempts = 0 },
+            Timeout = new TimeoutOptions { TimeoutMs = 0 }
+        };
+
+        await pipeline.ExecuteAsync("p", async _ =>
+        {
+            Interlocked.Increment(ref calls);
+            await Task.Delay(10);
+            return "ok";
+        }, definition);
+
+        calls.Should().Be(1, "hedging is disabled; no parallel attempts should fire");
+    }
+
+    [Fact]
+    public void WithPaymentSafeDefaults_NoArgsConstructor_ProducesFreshInstances()
+    {
+        var first = ResiliencePipeline.WithPaymentSafeDefaults();
+        var second = ResiliencePipeline.WithPaymentSafeDefaults();
+
+        first.Layers.Should().NotBeSameAs(second.Layers);
+        first.Layers[0].Should().NotBeSameAs(second.Layers[0]);
     }
 }

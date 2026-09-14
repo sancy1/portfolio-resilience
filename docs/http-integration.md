@@ -1,4 +1,4 @@
-ï»¿<!--
+<!--
 filepath: docs/http-integration.md
 package:  Portfolio.Resilience | since: v0.4.0
 purpose:  Explains how every HttpClient request flows through the resilience pipeline.
@@ -40,7 +40,7 @@ a second layer would double-retry.
 
 Three components.
 
-### `ResilientHttpMessageHandler` â€” the handler
+### `ResilientHttpMessageHandler` — the handler
 
 Location: `src/Portfolio.Resilience/HttpClient/ResilientHttpMessageHandler.cs`
 
@@ -50,18 +50,18 @@ A `DelegatingHandler` that:
 3. Classifies responses: 5xx, 408, 425, 429 throw (trigger retry); 2xx/3xx/4xx return to caller
 4. On final failure, throws `ResilienceException` with full context
 
-### `HttpRequestSnapshot` â€” the request cloner
+### `HttpRequestSnapshot` — the request cloner
 
 Location: `src/Portfolio.Resilience/HttpClient/HttpRequestSnapshot.cs`
 
-`HttpRequestMessage` is single-use â€” after the first send, its body stream is consumed.
+`HttpRequestMessage` is single-use — after the first send, its body stream is consumed.
 On retry, `InvalidOperationException: The request message was already sent`.
 
 The snapshot captures method, headers, URI, and body bytes. Each retry calls
 `BuildRequest()` which constructs a fresh `HttpRequestMessage`. This is what makes retry
 work for POST/PUT requests with bodies.
 
-### `AddResilientHandler` â€” the fluent API
+### `AddResilientHandler` — the fluent API
 
 Location: `src/Portfolio.Resilience/HttpClient/HttpClientBuilderExtensions.cs`
 
@@ -118,7 +118,7 @@ No logging. The handler does all of it.
 
 Same behavior, injected as `AuthClient` instead of through the factory.
 
-### The one-liner â€” `AddStandardResilienceHandler`
+### The one-liner — `AddStandardResilienceHandler`
 
 For most HTTP clients you want resilience with **sensible defaults** and no
 policy definition ceremony. One call does it:
@@ -134,12 +134,12 @@ not already registered) and routes every request through it.
 
 | Feature | Enabled | Configuration |
 |---------|---------|---------------|
-| Retry | âœ… | `MaxAttempts = 3`, `BaseDelayMs = 100`, `MaxDelayMs = 5000`, `JitterRatio = 0.3` |
-| Circuit breaker | âœ… | `FailureThreshold = 5`, `OpenDurationSeconds = 30` |
-| Timeout | âœ… | `TimeoutMs = 30_000` (30 seconds) |
-| Rate limiter | âŒ | Off â€” not every HTTP call needs rate limiting |
-| Bulkhead | âŒ | Off â€” not every HTTP call needs concurrency capping |
-| Hedging | âŒ | Off â€” **hedging is never enabled by default**, because it duplicates requests |
+| Retry | ? | `MaxAttempts = 3`, `BaseDelayMs = 100`, `MaxDelayMs = 5000`, `JitterRatio = 0.3` |
+| Circuit breaker | ? | `FailureThreshold = 5`, `OpenDurationSeconds = 30` |
+| Timeout | ? | `TimeoutMs = 30_000` (30 seconds) |
+| Rate limiter | ? | Off — not every HTTP call needs rate limiting |
+| Bulkhead | ? | Off — not every HTTP call needs concurrency capping |
+| Hedging | ? | Off — **hedging is never enabled by default**, because it duplicates requests |
 
 **Customize the standard policy inline:**
 
@@ -178,8 +178,45 @@ and every registration made before the first resolve is seen.
   hedging, or non-standard retry counts). Register that policy and use
   `AddResilientHandler("your-policy-name")` instead.
 - The client makes **non-idempotent writes** and you might be tempted to enable
-  hedging later. The `standard` policy deliberately does not enable hedging â€”
+  hedging later. The `standard` policy deliberately does not enable hedging —
   keep it that way for writes.
+## Idempotency-Key header
+
+Every request the handler sends carries the ambient idempotency key in a header
+(default `Idempotency-Key`). The header is added **on every attempt** - the
+primary request and every retried request - with the same value, so a
+downstream service that deduplicates on the key sees one logical write.
+
+Set the key per call site:
+
+    await _resilience.ExecuteAsync(
+        "stripe-charge",
+        ct => http.SendAsync(request, ct),
+        idempotencyKey: $"order-{orderId}",
+        ct: ct);
+
+Or scope a block of writes under a shared key:
+
+    using (IdempotencyContext.Push($"batch-{batchId}"))
+    {
+        await _resilience.ExecuteAsync("stripe-charge", ct => ChargeAsync(ct), ct: ct);
+        await _resilience.ExecuteAsync("stripe-charge", ct => RefundAsync(ct), ct: ct);
+    }
+
+For a provider with a different header convention, configure the handler:
+
+    builder.Services
+        .AddHttpClient("custom-psp")
+        .AddResilientHandler("custom-psp", options =>
+        {
+            options.IdempotencyHeaderName = "X-Idempotency";
+        });
+
+If no key is supplied and no ambient key is active, the executor derives one
+from the correlation ID (`idem-{correlation_id}`), guaranteeing retries of the
+same call carry the same value.
+
+**See [idempotency.md](idempotency.md) for the full story.**
 ## What the caller sees on failure
 
 When the pipeline exhausts retries or the circuit is open, the caller receives a
@@ -197,7 +234,7 @@ When the pipeline exhausts retries or the circuit is open, the caller receives a
     }
 
 **Services handle this in one place:** the `ResilienceExceptionMiddlewareBase`. See
-docs/executor.md Â§"Handling failures at the service boundary."
+docs/executor.md §"Handling failures at the service boundary."
 
 ## HTTP status classification
 
@@ -254,26 +291,26 @@ first and the caller sees `TaskCanceledException` instead of the structured
 
 ## Common mistakes
 
-**Mistake 1 â€” setting HttpClient.Timeout to the same value as Policy.TimeoutMs.**
+**Mistake 1 — setting HttpClient.Timeout to the same value as Policy.TimeoutMs.**
 The HttpClient timeout would fire on the first attempt, before any retry runs. The
 caller sees `TaskCanceledException`, not `ResilienceException`.
 
-**Mistake 2 â€” expecting a 404 to throw.**
+**Mistake 2 — expecting a 404 to throw.**
 It won't. 404 is a legitimate response and is returned to the caller. Only transient
 statuses throw. Check `response.IsSuccessStatusCode` at the call site if you want to
 branch on non-success.
 
-**Mistake 3 â€” reusing an HttpRequestMessage across SendAsync calls.**
+**Mistake 3 — reusing an HttpRequestMessage across SendAsync calls.**
 Even with our handler, this fails. The handler clones for its internal retries, but if
 you manually call `SendAsync(sameMessage)` twice, the second fails. Always create a new
 `HttpRequestMessage` per logical call.
 
-**Mistake 4 â€” using the resilient handler for streaming responses.**
+**Mistake 4 — using the resilient handler for streaming responses.**
 A long-lived SSE or gRPC stream will hit the per-attempt timeout. Use a separate
 HttpClient without `AddResilientHandler` for streaming, or configure a very high
 per-attempt timeout for that policy.
 
-**Mistake 5 â€” forgetting to register the policy.**
+**Mistake 5 — forgetting to register the policy.**
 If you attach `.AddResilientHandler("auth-service")` but never call
 `AddPolicy("auth-service", ...)`, the handler uses the **default policy**. It works,
 but with default thresholds. Register the policy explicitly to tune for the dependency.
@@ -296,4 +333,4 @@ See `tests/Portfolio.Resilience.Tests/ResilientHttpMessageHandlerTests.cs` (9 te
 - [circuit-breaker.md](circuit-breaker.md) - how circuit state affects HTTP calls
 - [timeout.md](timeout.md) - timeout semantics in detail
 - [error-classification.md](error-classification.md) - HTTP status classification rules
-- [../SPEC.md](../SPEC.md) Â§HttpIntegration
+- [../SPEC.md](../SPEC.md) §HttpIntegration

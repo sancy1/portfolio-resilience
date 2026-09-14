@@ -1,7 +1,7 @@
-﻿<!--
+<!--
 filepath: docs/executor.md
-package:  Portfolio.Resilience | since: v0.5.0
-purpose:  Explains the executor — the single entry point for every resilient operation.
+package:  Portfolio.Resilience | since: v0.8.0
+purpose:  Explains the executor - the single entry point for every resilient operation.
 -->
 
 # Executor
@@ -15,20 +15,25 @@ resilient call in every service goes through one of its two methods:
         string policyName,
         Func<CancellationToken, Task<T>> operation,
         Func<CancellationToken, Task<T>>? fallback = null,
+        string? idempotencyKey = null,
+        int? timeBudgetMs = null,
         CancellationToken ct = default);
 
     Task ExecuteAsync(
         string policyName,
         Func<CancellationToken, Task> operation,
         Func<CancellationToken, Task>? fallback = null,
+        string? idempotencyKey = null,
+        int? timeBudgetMs = null,
         CancellationToken ct = default);
 
 The executor:
 1. Resolves the policy by name via `IResiliencePolicyRegistry`.
-2. Runs the operation through the composite pipeline (retry → circuit → timeout).
+2. Runs the operation through the composite pipeline (rate limiter, bulkhead,
+   hedging, retry, circuit, timeout - whichever layers the policy enables).
 3. Emits structured events at each stage.
 4. Records latency metrics and in-flight counts.
-5. Handles optional per-call fallback.
+5. Handles optional per-call fallback, idempotency key, and time budget.
 6. Wraps failures in `ResilienceException` with full context.
 
 Everything else in the library exists to make these two methods work correctly.
@@ -49,8 +54,8 @@ Without a single entry point, each service would have to:
 The executor gives every service one consistent, correct, tested path. Call sites
 are two lines: acquire the executor (via DI), call `ExecuteAsync`.
 
-**The alternative** — each service manually wrapping calls in Polly or
-hand-rolled logic — was the industry norm ten years ago. It produces inconsistent
+**The alternative** - each service manually wrapping calls in Polly or
+hand-rolled logic - was the industry norm ten years ago. It produces inconsistent
 behavior, silent bugs, and observability gaps.
 
 **The executor** centralizes the pipeline. The library owns the semantics; the
@@ -75,33 +80,51 @@ service owns the operation.
 
 The rule: **if it can fail transiently because of something outside your process,
 it goes through the executor.**
+
 ## How it works
 
 ### The pipeline
 
-The executor runs the operation through four layers, nested inside-out:
+The executor runs the operation through the default six-layer pipeline, nested
+inside-out:
 
     Caller
-      └─> Retry        (outermost — can re-run the inner layers)
-            └─> Circuit  (middle — can reject without running the operation)
-                  └─> Timeout  (innermost — bounds a single attempt)
-                        └─> Operation
-                              └─> returns or throws
+      +-> RateLimiter  (outermost - capacity gate, per policy)
+            +-> Bulkhead  (concurrency cap, per policy)
+                  +-> Hedging  (parallel attempts; only when enabled)
+                        +-> Retry  (re-runs the inner layers on transient failures)
+                              +-> Circuit  (fails fast when the dependency is broken)
+                                    +-> Timeout  (innermost - bounds a single attempt)
+                                          +-> Operation
+                                                +-> returns or throws
+
+The rate limiter and bulkhead are only present when their `Enabled` flags are
+true in the policy definition. Hedging is present only when enabled. Retry,
+circuit, and timeout are always present; their behavior is controlled by their
+own options (for example, `Retry.MaxAttempts = 0` disables retry).
+
+For custom orders - including the payment-safe preset
+`ResiliencePipeline.WithPaymentSafeDefaults()` - see
+[composition.md](composition.md).
 
 **Order rationale (repeated from retry.md because it matters):**
 
-- **Retry outermost:** each retry attempt gets a fresh circuit check and a fresh
-  timeout budget. A slow attempt does not consume the budget of subsequent
-  attempts.
-- **Circuit middle:** when the circuit is Open, the operation is never attempted.
-  No timeout runs, no resource is consumed. Fail-fast at its fastest.
-- **Timeout innermost:** bounds a single attempt. Retries multiply the total time,
-  but each attempt has the same ceiling.
+- **Rate limiter outermost:** reject before retry can multiply load.
+- **Bulkhead next:** cap concurrency before the retry loop multiplies it.
+- **Hedging before retry:** the race is a latency optimization; the retry loop
+  wraps the whole race so that when all attempts fail the operation is tried
+  again as a group.
+- **Retry outside circuit:** each retry attempt gets a fresh circuit check. A
+  slow attempt does not consume the budget of subsequent attempts.
+- **Circuit outside timeout:** when the circuit is Open, the operation is never
+  attempted. No timeout runs, no resource is consumed.
+- **Timeout innermost:** bounds a single attempt. Retries multiply the total
+  time, but each attempt has the same ceiling.
 
 ### Walkthrough of a call
 
 Consider `ExecuteAsync("auth-service", ct => _client.GetUserAsync(id, ct))` where
-`auth-service` policy is:
+the `auth-service` policy is:
 
     Retry.MaxAttempts = 3, Retry.BaseDelayMs = 100
     Circuit.FailureThreshold = 5, Circuit.OpenDurationSeconds = 30
@@ -157,7 +180,7 @@ Consider `ExecuteAsync("auth-service", ct => _client.GetUserAsync(id, ct))` wher
 ### Fallback
 
 The optional `fallback` parameter is invoked **after** the pipeline fails. It runs
-**outside** the resilience pipeline — no retries, no circuit, no timeout.
+**outside** the resilience pipeline - no retries, no circuit, no timeout.
 
     var user = await _executor.ExecuteAsync(
         "auth-service",
@@ -165,8 +188,8 @@ The optional `fallback` parameter is invoked **after** the pipeline fails. It ru
         fallback: ct => Task.FromResult(UserDto.Anonymous),
         ct: ct);
 
-If the pipeline exhausts retries, or the circuit is Open, or the timeout fires —
-whichever fails last — the executor catches the failure and invokes the fallback.
+If the pipeline exhausts retries, or the circuit is Open, or the timeout fires -
+whichever fails last - the executor catches the failure and invokes the fallback.
 
 **Fallback is per-call, not per-policy.** Whether a fallback makes sense depends on
 the call site, not on the dependency. A user lookup can fall back to
@@ -179,7 +202,6 @@ the call site, not on the dependency. A user lookup can fall back to
 - The original pipeline error is logged (via `CallFailed`) before the fallback
   runs, so both failures are visible in logs.
 
-See `docs/fallback.md` for the full fallback resolution rules.
 ### Handling failures at the service boundary
 
 Every call ultimately either succeeds or throws `ResilienceException`. The
@@ -254,7 +276,7 @@ render errors differently. The library only shares the mechanism.
 - Consumer-facing messages
 - Pagination, DTO shapes, API versioning
 
-The SPEC explicitly documents this split. See `SPEC.md` §ResponseEnvelopeOwnership.
+The SPEC explicitly documents this split. See `SPEC.md` section 11.
 
 ### Structured events
 
@@ -283,6 +305,7 @@ The default is `InMemoryMetricSink`, which supports read-side queries via
     // snap.P50Ms, snap.P95Ms, snap.P99Ms, snap.ErrorRate, snap.TotalCalls
 
 This is what powers the `/health/resilience` endpoint. See `docs/metrics.md`.
+
 ## Registration
 
 Register the library once during startup:
@@ -302,20 +325,26 @@ Register the library once during startup:
 
 **What `AddPortfolioResilience` registers:**
 
-| Interface | Implementation | Lifetime |
-|-----------|----------------|----------|
-| `IResilienceExecutor` | `ResilienceExecutor` | Singleton |
+| Interface / Type | Implementation | Lifetime |
+|------------------|----------------|----------|
+| `ResilienceOptions` | Captured options | Singleton |
 | `IResiliencePolicyRegistry` | `ResiliencePolicyRegistry` | Singleton |
+| `ICorrelationAccessor` | `AsyncLocalCorrelationAccessor` | Singleton |
 | `ILogSink` | Configured sink (or `NullLogSink`) | Singleton |
 | `IMetricSink` | `InMemoryMetricSink` (or composite) | Singleton |
-| `ICorrelationAccessor` | `AsyncLocalCorrelationAccessor` | Singleton |
-| `ILatencyTracker` | `LatencyTracker` | Singleton |
-| `ICircuitBreakerMonitor` | `CircuitBreakerMonitor` | Singleton |
+| `InMemoryMetricSink` | Concrete | Singleton |
+| `ResilienceEventEmitter` | Concrete | Singleton |
+| `ErrorClassifier` | Concrete | Singleton |
 | `RetryPolicyBuilder` | Concrete | Singleton |
 | `TimeoutPolicyBuilder` | Concrete | Singleton |
 | `CircuitPolicyBuilder` | Concrete | Singleton |
+| `RateLimiterPolicyBuilder` | Concrete | Singleton |
+| `BulkheadPolicyBuilder` | Concrete | Singleton |
+| `HedgingPolicyBuilder` | Concrete | Singleton |
 | `CompositePolicyBuilder` | Concrete | Singleton |
-| `ResilienceEventEmitter` | Concrete | Singleton |
+| `IResilienceExecutor` | `ResilienceExecutor` | Singleton |
+| `ILatencyTracker` | `LatencyTracker` | Singleton |
+| `ICircuitBreakerMonitor` | `CircuitBreakerMonitor` | Singleton |
 
 ## Using the executor in a service
 
@@ -362,33 +391,33 @@ metrics. All of that lives in the pipeline.
 
 ## Common mistakes
 
-**Mistake 1 — catching ResilienceException everywhere.**
+**Mistake 1 - catching ResilienceException everywhere.**
 Install the middleware base once. Let the pipeline's exception propagate to it. Do
 not wrap every controller action in try/catch.
 
-**Mistake 2 — passing the caller's CancellationToken as the operation's only token.**
+**Mistake 2 - passing the caller's CancellationToken as the operation's only token.**
 The pipeline uses the token internally. Pass `ct` at the top-level `ExecuteAsync`
 call, and let the pipeline thread its own linked token into the operation.
 
-**Mistake 3 — using a fallback for everything.**
+**Mistake 3 - using a fallback for everything.**
 A fallback that hides a real failure is worse than the failure. Use fallbacks only
 when "a valid degraded response" is genuinely acceptable to the caller.
 
-**Mistake 4 — expecting the fallback to run inside the pipeline.**
-The fallback runs **outside** — no retries, no circuit, no timeout. If the fallback
+**Mistake 4 - expecting the fallback to run inside the pipeline.**
+The fallback runs **outside** - no retries, no circuit, no timeout. If the fallback
 itself depends on an external service, wrap that dependency in its own resilient
 call.
 
-**Mistake 5 — not registering a policy for a dependency.**
+**Mistake 5 - not registering a policy for a dependency.**
 If you attach `AddResilientHandler("auth-service")` but never call
-`AddPolicy("auth-service", ...)`, the default policy is used. It works — but the
+`AddPolicy("auth-service", ...)`, the default policy is used. It works - but the
 thresholds may not match the dependency's characteristics. Always register explicit
 policies for known dependencies.
 
-**Mistake 6 — inspecting events from a non-log sink.**
+**Mistake 6 - inspecting events from a non-log sink.**
 The event sink contract (`ILogSink.Emit(ResilienceEvent)`) is single-method. If you
-need to observe events in-process (e.g., for tests), implement a small capturing
-sink:
+need to observe events in-process (for example, for tests), implement a small
+capturing sink:
 
     public sealed class CapturingSink : ILogSink
     {
@@ -398,27 +427,31 @@ sink:
 
 ## Testing
 
-Verified by `tests/Portfolio.Resilience.Tests/ResilienceExecutorTests.cs` (14 tests):
+Verified by `tests/Portfolio.Resilience.Tests/ResilienceExecutorTests.cs` plus the
+v0.8.0 integration tests:
 
 - Null policy name / null operation rejected
 - Success path returns result, emits `CallStarted` + `CallSucceeded`, records metric
 - Transient failure retried, succeeds on later attempt
 - Exhausted retries throw `ResilienceException` with policy name and category
-- With fallback → fallback value returned, `FallbackUsed` event emitted
-- Fallback throws → `ResilienceException` with `fallback_error` metadata
+- With fallback -> fallback value returned, `FallbackUsed` event emitted
+- Fallback throws -> `ResilienceException` with `fallback_error` metadata
 - Correlation ID from ambient context propagates to all events
+- Idempotency key propagates to the operation and is restored after the call
+- Time budget scope is visible inside the operation and restored after the call
 - Non-generic `ExecuteAsync` returns a Task, fallback invoked on failure
 - In-flight count is 1 during execution, 0 after
 
 ## See also
 
-- [error-classification.md](error-classification.md) — what determines category
-- [retry.md](retry.md) — the outermost pipeline layer
-- [circuit-breaker.md](circuit-breaker.md) — the middle pipeline layer
-- [timeout.md](timeout.md) — the innermost pipeline layer
-- [fallback.md](fallback.md) — full fallback resolution rules
-- [logging.md](logging.md) — event schema and sinks
-- [metrics.md](metrics.md) — latency tracking
-- [correlation.md](correlation.md) — correlation ID propagation
-- [http-integration.md](http-integration.md) — the delegating handler
-- [../SPEC.md](../SPEC.md) §Executor — the normative pipeline contract
+- [error-classification.md](error-classification.md) - what determines category
+- [retry.md](retry.md) - the retry layer
+- [circuit-breaker.md](circuit-breaker.md) - the circuit layer
+- [timeout.md](timeout.md) - the timeout layer
+- [idempotency.md](idempotency.md) - idempotency key propagation
+- [time-budget.md](time-budget.md) - total wall-clock budget
+- [logging.md](logging.md) - event schema and sinks
+- [metrics.md](metrics.md) - latency tracking
+- [correlation.md](correlation.md) - correlation ID propagation
+- [http-integration.md](http-integration.md) - the delegating handler
+- [../SPEC.md](../SPEC.md) - the normative pipeline contract

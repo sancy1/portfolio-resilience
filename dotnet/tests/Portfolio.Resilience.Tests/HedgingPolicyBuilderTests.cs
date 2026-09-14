@@ -1,4 +1,4 @@
-ï»¿// filepath: tests/Portfolio.Resilience.Tests/HedgingPolicyBuilderTests.cs
+// filepath: tests/Portfolio.Resilience.Tests/HedgingPolicyBuilderTests.cs
 // layer: Tests | package: Portfolio.Resilience.Tests | since: v0.7.0
 // purpose: Verifies hedging: stagger, winner selection, cancellation, per-attempt timeout, and events.
 // -----------------------------------------------------------------------------
@@ -78,7 +78,7 @@ public sealed class HedgingPolicyBuilderTests
     }
 
     // ------------------------------------------------------------------------
-    // Disabled / single attempt â€” pass-through
+    // Disabled / single attempt — pass-through
     // ------------------------------------------------------------------------
 
     [Fact]
@@ -319,7 +319,7 @@ public sealed class HedgingPolicyBuilderTests
     }
 
     // ------------------------------------------------------------------------
-    // All attempts fail â€” exception preservation
+    // All attempts fail — exception preservation
     // ------------------------------------------------------------------------
 
     [Fact]
@@ -393,5 +393,81 @@ public sealed class HedgingPolicyBuilderTests
         cts.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
+    }
+    // ------------------------------------------------------------------------
+    // v0.8.0 - Time budget interaction
+    // ------------------------------------------------------------------------
+
+    [Fact]
+    public async Task ExecuteAsync_BudgetExhausted_DoesNotFireHedge()
+    {
+        var builder = new HedgingPolicyBuilder();
+        var attempts = 0;
+
+        // Budget is 5ms; stagger delay is 100ms. The hedge must not fire.
+        using var _ = Portfolio.Resilience.Correlation.TimeBudgetContext.Push(5);
+
+        var result = await builder.ExecuteAsync("p", _ =>
+        {
+            Interlocked.Increment(ref attempts);
+            return Task.FromResult(42);
+        }, Options(delayMs: 100, maxAttempts: 2));
+
+        result.Should().Be(42);
+        attempts.Should().Be(1, "the hedge should be skipped when the budget cannot cover the stagger delay");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_BudgetSufficient_FiresHedgeNormally()
+    {
+        var builder = new HedgingPolicyBuilder();
+        var attemptCounter = 0;
+        var primaryTcs = new TaskCompletionSource<int>();
+
+        // Budget is 5 seconds; stagger is 10ms. Plenty of room for a hedge.
+        using var _ = Portfolio.Resilience.Correlation.TimeBudgetContext.Push(5000);
+
+        var result = await builder.ExecuteAsync("p", async ct =>
+        {
+            var n = Interlocked.Increment(ref attemptCounter);
+            if (n == 1)
+            {
+                using (ct.Register(() => primaryTcs.TrySetCanceled()))
+                {
+                    return await primaryTcs.Task;
+                }
+            }
+            return 99;
+        }, Options(delayMs: 10, cancelOnSuccess: true));
+
+        result.Should().Be(99);
+        attemptCounter.Should().Be(2);
+        primaryTcs.TrySetResult(0);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_NoBudgetScope_HedgesAsBefore()
+    {
+        var builder = new HedgingPolicyBuilder();
+        var attemptCounter = 0;
+        var primaryTcs = new TaskCompletionSource<int>();
+
+        // No budget scope - v0.7.0 behavior.
+        var result = await builder.ExecuteAsync("p", async ct =>
+        {
+            var n = Interlocked.Increment(ref attemptCounter);
+            if (n == 1)
+            {
+                using (ct.Register(() => primaryTcs.TrySetCanceled()))
+                {
+                    return await primaryTcs.Task;
+                }
+            }
+            return 99;
+        }, Options(delayMs: 10, cancelOnSuccess: true));
+
+        result.Should().Be(99);
+        attemptCounter.Should().Be(2);
+        primaryTcs.TrySetResult(0);
     }
 }

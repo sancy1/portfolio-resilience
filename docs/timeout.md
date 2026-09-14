@@ -1,7 +1,7 @@
-ï»¿<!--
+<!--
 filepath: docs/timeout.md
 package:  Portfolio.Resilience | since: v0.5.0
-purpose:  Explains the timeout policy â€” ceiling semantics and caller-cancellation distinction.
+purpose:  Explains the timeout policy — ceiling semantics and caller-cancellation distinction.
 -->
 
 # Timeout
@@ -53,11 +53,11 @@ A missing timeout is a latent outage waiting to happen.
 | Database read | `10000` | Most queries complete in <100ms; 10s is generous |
 | Database write | `15000` | Writes may wait on locks or batch commits |
 | Redis | `2000` | Redis is in-memory; if it is slow, something is wrong |
-| AI service (LLM inference) | `60000`+ | Inference genuinely takes 10â€“60s |
+| AI service (LLM inference) | `60000`+ | Inference genuinely takes 10–60s |
 
 **A timeout should be a signal, not a kill switch.** If a call times out regularly,
 the ceiling is too low or the dependency is unhealthy. Neither is fixed by raising
-the timeout â€” that only hides the problem.
+the timeout — that only hides the problem.
 ## How it works
 
 ### Linked cancellation tokens
@@ -85,10 +85,10 @@ fired:
     {
         if (callerCt.IsCancellationRequested)
         {
-            // Real user cancellation â€” rethrow as-is
+            // Real user cancellation — rethrow as-is
             throw;
         }
-        // Our timer fired â€” surface a typed ResilienceException
+        // Our timer fired — surface a typed ResilienceException
         throw new ResilienceException(
             category: ResilienceErrorCategory.Timeout,
             ...);
@@ -98,11 +98,11 @@ fired:
 
 | Scenario | Correct behavior | Wrong behavior |
 |----------|------------------|----------------|
-| User closes browser mid-request | Rethrow `OperationCanceledException` â€” caller does not want a result | Retry, log an error, alert ops |
-| Our ceiling fires on a slow dependency | Throw `ResilienceException(Timeout)` â€” retry and circuit may react | Silently return null; hide the outage |
+| User closes browser mid-request | Rethrow `OperationCanceledException` — caller does not want a result | Retry, log an error, alert ops |
+| Our ceiling fires on a slow dependency | Throw `ResilienceException(Timeout)` — retry and circuit may react | Silently return null; hide the outage |
 
 If the timeout policy confused the two, a user closing a tab would trigger retries
-and count against the circuit â€” insane.
+and count against the circuit — insane.
 
 ### Timeout as `ResilienceException`
 
@@ -122,7 +122,7 @@ failure in a `ResilienceException`:
         });
 
 The `Timeout` category is distinct from `Transient`. See
-`docs/error-classification.md` Â§"Design note: why TimeoutException is Transient"
+`docs/error-classification.md` §"Design note: why TimeoutException is Transient"
 for why we keep them separate.
 
 ### Disabling the timeout
@@ -139,6 +139,18 @@ until it completes or the caller's token fires.
 - Any HTTP call to another service
 - Any database call
 - Any Redis call
+## Time budget interaction (v0.8.0)
+
+When the caller sets `timeBudgetMs` on `ExecuteAsync`, the effective per-attempt
+ceiling becomes `min(configured TimeoutMs, remaining budget)`. When the
+configured timeout is disabled (`TimeoutMs <= 0`) but a budget is active, the
+budget becomes the effective ceiling - the caller's SLA wins.
+
+When the budget is already exhausted at entry, the timeout throws immediately
+with `Category = Timeout` and `metadata.remaining_ms` recording the value.
+
+Without a budget, timeout behaves exactly as it did in v0.7.0. See
+[time-budget.md](time-budget.md) for the full contract.
 ## Configuration
 
 Timeout tuning is minimal. One option per policy:
@@ -210,25 +222,25 @@ caller sees `TaskCanceledException` instead of the structured `ResilienceExcepti
 
 ## Common mistakes
 
-**Mistake 1 â€” disabling the timeout everywhere.**
+**Mistake 1 — disabling the timeout everywhere.**
 "Just to make sure nothing times out" is how services die. A slow dependency with
 no ceiling will eventually exhaust the caller's thread pool.
 
-**Mistake 2 â€” setting HttpClient.Timeout equal to TimeoutMs.**
+**Mistake 2 — setting HttpClient.Timeout equal to TimeoutMs.**
 The first attempt uses the entire budget. Any retry cannot run (the outer timeout
 fires first). The caller sees `TaskCanceledException`, not `ResilienceException`.
 
-**Mistake 3 â€” setting TimeoutMs too low.**
+**Mistake 3 — setting TimeoutMs too low.**
 A 500ms timeout on a database that occasionally takes 800ms under load produces
 constant failures. Set the ceiling at ~10x the p99 latency of the dependency in
 normal operation.
 
-**Mistake 4 â€” confusing TimeoutException and the Timeout category.**
+**Mistake 4 — confusing TimeoutException and the Timeout category.**
 A `System.TimeoutException` from a socket times out is classified as **Transient**
 (retry may help). Only our policy's own ceiling produces `ResilienceErrorCategory.Timeout`.
 See `docs/error-classification.md`.
 
-**Mistake 5 â€” expecting cancellation to propagate cleanly through a timeout.**
+**Mistake 5 — expecting cancellation to propagate cleanly through a timeout.**
 If the inner operation ignores its cancellation token, the timer fires but the
 operation keeps running in the background. This is a bug in the operation, not
 in the timeout policy. Operations must honor `ct.ThrowIfCancellationRequested()`
@@ -240,30 +252,30 @@ Verified by `tests/Portfolio.Resilience.Tests/TimeoutPolicyBuilderTests.cs` (8 t
 
 - Null operation/options/policy name rejected
 - Fast operation completes, returns result
-- Slow operation exceeds ceiling â†’ `ResilienceException(Timeout)` with `timeout_ms` metadata
-- Caller's token fires before the ceiling â†’ `OperationCanceledException`, not `ResilienceException`
+- Slow operation exceeds ceiling ? `ResilienceException(Timeout)` with `timeout_ms` metadata
+- Caller's token fires before the ceiling ? `OperationCanceledException`, not `ResilienceException`
 - `TimeoutMs = 0` disables the ceiling (slow operation still completes)
 - Near-ceiling operation succeeds when it finishes in time
 
 ## See also
 
-- [retry.md](retry.md) â€” how retry multiplies the total time budget
-- [error-classification.md](error-classification.md) â€” why `Timeout` differs from `Transient`
-- [http-integration.md](http-integration.md) â€” the three-layer timeout interaction
-- [executor.md](executor.md) â€” where timeout sits in the pipeline
-- [../SPEC.md](../SPEC.md) Â§Timeout â€” the normative semantics
+- [retry.md](retry.md) — how retry multiplies the total time budget
+- [error-classification.md](error-classification.md) — why `Timeout` differs from `Transient`
+- [http-integration.md](http-integration.md) — the three-layer timeout interaction
+- [executor.md](executor.md) — where timeout sits in the pipeline
+- [../SPEC.md](../SPEC.md) §Timeout — the normative semantics
 
-## How to use it â€” a worked walkthrough
+## How to use it — a worked walkthrough
 
 This section walks through adding a timeout to a real call site, one step at
 a time. It assumes you already call operations through `IResilienceExecutor`
 (or `ResilientHttpMessageHandler`). If you do not, see
 [executor.md](executor.md) first.
 
-### Step 1 â€” Decide what to protect
+### Step 1 — Decide what to protect
 
 Suppose you have an HTTP call to an external pricing service. The service is
-usually fast (100â€“200ms) but occasionally slow (2â€“5s). The call site currently
+usually fast (100–200ms) but occasionally slow (2–5s). The call site currently
 looks like this:
 
     var price = await _http.GetFromJsonAsync<Price>($"/api/v1/prices/{sku}", ct);
@@ -273,7 +285,7 @@ thread stays occupied. Under load, this cascades.
 
 **The operation to protect is the `GetFromJsonAsync` call.**
 
-### Step 2 â€” Register a policy for that dependency
+### Step 2 — Register a policy for that dependency
 
 In `Program.cs`, register a policy that matches the pricing service's
 behavior:
@@ -281,7 +293,7 @@ behavior:
     builder.Services.AddPortfolioResilience(r => r
         .AddPolicy("pricing-service", p =>
         {
-            p.Timeout.TimeoutMs = 3000;   // 3 seconds â€” well above p99, still bounded
+            p.Timeout.TimeoutMs = 3000;   // 3 seconds — well above p99, still bounded
             p.Retry.MaxAttempts = 2;      // retry transient failures
             p.Retry.BaseDelayMs = 200;
         }));
@@ -289,10 +301,10 @@ behavior:
 **Why 3000ms?** The service is normally fast. A 3-second ceiling is generous
 enough that it rarely fires, but low enough that a hung call is killed
 before it spreads. **The ceiling is a signal, not a target.** If it fires
-often, the dependency is unhealthy â€” the fix is to fix the dependency, not
+often, the dependency is unhealthy — the fix is to fix the dependency, not
 raise the ceiling.
 
-### Step 3 â€” Wrap the call site
+### Step 3 — Wrap the call site
 
 Replace the direct HTTP call with one through `IResilienceExecutor`:
 
@@ -322,36 +334,36 @@ Replace the direct HTTP call with one through `IResilienceExecutor`:
 **What changed:**
 
 - The `HttpClient` call now runs inside `ExecuteAsync`.
-- The **caller's `ct`** is passed through to `ExecuteAsync` â€” this is what
+- The **caller's `ct`** is passed through to `ExecuteAsync` — this is what
   distinguishes "the caller gave up" from "our ceiling fired." If you drop
   the `ct`, a user-closed browser tab becomes indistinguishable from a slow
   service, and the timeout policy may retry work nobody wants.
-- The `token` inside the lambda is the **linked** token â€” it fires when
+- The `token` inside the lambda is the **linked** token — it fires when
   either the caller's `ct` fires OR our 3000ms timer fires.
 
-### Step 4 â€” Understand what happens on each outcome
+### Step 4 — Understand what happens on each outcome
 
 Given `TimeoutMs = 3000`, `MaxAttempts = 2`, `BaseDelayMs = 200`, four
 outcomes are possible:
 
 | Outcome | What the caller sees |
 |---------|---------------------|
-| Pricing service replies in 150ms | `Price` object â€” no timeout involved |
-| Pricing service takes 3.5s | After 3s, the ceiling fires â†’ `ResilienceException(Timeout)`. Retry sleeps 200ms, then tries again â€” a **fresh 3-second window** |
-| Pricing service hangs indefinitely | Same as above, but every attempt burns its full 3s. Worst case: 3 attempts Ã— 3s + 2 Ã— 200ms backoff = **~9.4s total**, then `ResilienceException(Timeout)` |
-| Caller cancels the request (user closes tab) | `OperationCanceledException` â€” NOT a `ResilienceException`. No retry, no circuit count, no ops alert |
+| Pricing service replies in 150ms | `Price` object — no timeout involved |
+| Pricing service takes 3.5s | After 3s, the ceiling fires ? `ResilienceException(Timeout)`. Retry sleeps 200ms, then tries again — a **fresh 3-second window** |
+| Pricing service hangs indefinitely | Same as above, but every attempt burns its full 3s. Worst case: 3 attempts × 3s + 2 × 200ms backoff = **~9.4s total**, then `ResilienceException(Timeout)` |
+| Caller cancels the request (user closes tab) | `OperationCanceledException` — NOT a `ResilienceException`. No retry, no circuit count, no ops alert |
 
 **The fourth outcome is the important one.** Timeout correctly separates
 "caller chose to stop" from "our ceiling fired." If it did not, a user
 closing a browser tab would trigger retries against a healthy service.
 
-### Step 5 â€” Tune based on observed behavior
+### Step 5 — Tune based on observed behavior
 
 Once this is running in production, watch two signals:
 
-- **`timeout_breached` events in your `ILogSink`** â€” how often is the ceiling
+- **`timeout_breached` events in your `ILogSink`** — how often is the ceiling
   firing?
-- **`LatencySnapshot.P99Ms` from `ILatencyTracker`** â€” where is the actual
+- **`LatencySnapshot.P99Ms` from `ILatencyTracker`** — where is the actual
   p99?
 
 If the ceiling fires under 0.1% of calls, the value is fine. If it fires
@@ -364,10 +376,10 @@ often (say >1%), the dependency is genuinely slow. Two options:
 **Never raise the ceiling just to make the warnings stop.** That removes the
 signal but not the problem.
 
-### Step 6 â€” Coordinate with the outer HTTP timeout
+### Step 6 — Coordinate with the outer HTTP timeout
 
 If your service is behind nginx, an ALB, or Kestrel, there is a third ceiling
-in the path â€” the whole-request timeout. Its value must be **larger than the
+in the path — the whole-request timeout. Its value must be **larger than the
 worst-case time of the pipeline**, or the outer timeout fires before our
 policy produces its structured exception.
 
@@ -375,7 +387,7 @@ For the pricing example above, the pipeline worst case is ~9.4s. A 15-second
 outer timeout leaves comfortable headroom.
 
 For `HttpClient` itself (when used inside the pipeline), set
-`HttpClient.Timeout` **larger** than `TimeoutMs Ã— (MaxAttempts + 1)`:
+`HttpClient.Timeout` **larger** than `TimeoutMs × (MaxAttempts + 1)`:
 
     builder.Services
         .AddHttpClient("pricing-service", c =>
@@ -386,9 +398,9 @@ For `HttpClient` itself (when used inside the pipeline), set
         .AddResilientHandler("pricing-service");
 
     // policy: TimeoutMs = 3000, MaxAttempts = 2
-    // worst case: 3 Ã— 3s + backoff ~= 9.4s â†’ safely under 15s
+    // worst case: 3 × 3s + backoff ~= 9.4s ? safely under 15s
 
-### Step 7 â€” What a `Timeout` failure looks like to the caller
+### Step 7 — What a `Timeout` failure looks like to the caller
 
 If the ceiling does fire and all retries are exhausted, the caller catches:
 
@@ -410,11 +422,11 @@ If the ceiling does fire and all retries are exhausted, the caller catches:
 
 The exception carries:
 
-- `Category = Timeout` â€” a specific category, not `Transient`.
-- `AttemptsMade` â€” how many attempts actually ran before the ceiling fired.
-- `TotalDuration` â€” wall time from first attempt to final failure.
-- `Metadata["timeout_ms"]` â€” the configured ceiling.
-- `Metadata["elapsed_ms"]` â€” how long the operation actually ran.
+- `Category = Timeout` — a specific category, not `Transient`.
+- `AttemptsMade` — how many attempts actually ran before the ceiling fired.
+- `TotalDuration` — wall time from first attempt to final failure.
+- `Metadata["timeout_ms"]` — the configured ceiling.
+- `Metadata["elapsed_ms"]` — how long the operation actually ran.
 
 **This is why the timeout policy uses a distinct category.** A caller can
 differentiate between "retry eventually won" (no exception), "retry exhausted
@@ -428,6 +440,6 @@ because I do not want failures in development" ships to production. In
 production, the same missing ceiling that made dev easier becomes the
 cascading failure you were trying to prevent.
 
-If you need a longer ceiling in a specific environment, set a value â€” do not
+If you need a longer ceiling in a specific environment, set a value — do not
 remove the ceiling entirely.
 

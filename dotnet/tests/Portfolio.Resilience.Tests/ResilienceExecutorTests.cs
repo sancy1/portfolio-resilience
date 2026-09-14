@@ -1,13 +1,13 @@
-﻿// filepath: tests/Portfolio.Resilience.Tests/ResilienceExecutorTests.cs
+// filepath: tests/Portfolio.Resilience.Tests/ResilienceExecutorTests.cs
 // layer: Tests | package: Portfolio.Resilience.Tests | since: v0.3.0
 // purpose: Verifies ResilienceExecutor pipeline, fallback handling, event emission, and metrics.
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // RELATIONSHIPS
 //   Tests      : ResilienceExecutor (Implementation/ResilienceExecutor.cs)
 //   Depends on : IResilienceExecutor, ResiliencePolicyRegistry, InMemoryMetricSink,
 //                ResilienceEventEmitter, ResilienceException, xUnit, FluentAssertions
 //   See also   : docs/executor.md
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 using FluentAssertions;
 using Portfolio.Resilience.Abstractions;
@@ -280,5 +280,145 @@ public sealed class ResilienceExecutorTests
 
         inFlightDuringOperation.Should().Be(1);
         metrics.Get("p")!.InFlight.Should().Be(0);
+    }
+    // ------------------------------------------------------------------------
+    // v0.8.0 - Idempotency key propagation
+    // ------------------------------------------------------------------------
+
+    [Fact]
+    public async Task ExecuteAsync_WithIdempotencyKey_KeyIsVisibleInsideOperation()
+    {
+        var sink = new CapturingSink();
+        var metrics = new InMemoryMetricSink();
+        var ex = BuildExecutor(sink, metrics, FastOptions());
+
+        string? observedKey = null;
+        await ex.ExecuteAsync(
+            "p",
+            _ => { observedKey = IdempotencyContext.CurrentKey; return Task.FromResult(42); },
+            idempotencyKey: "order-12345");
+
+        observedKey.Should().Be("order-12345");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithNullIdempotencyKey_GeneratesKeyFromCorrelation()
+    {
+        var sink = new CapturingSink();
+        var metrics = new InMemoryMetricSink();
+        var ex = BuildExecutor(sink, metrics, FastOptions());
+
+        string? observedKey = null;
+        using (CorrelationContext.Push("abc-123"))
+        {
+            await ex.ExecuteAsync(
+                "p",
+                _ => { observedKey = IdempotencyContext.CurrentKey; return Task.FromResult(42); });
+        }
+
+        observedKey.Should().Be("idem-abc-123");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithIdempotencyKey_KeyIsRestoredAfterCall()
+    {
+        var sink = new CapturingSink();
+        var metrics = new InMemoryMetricSink();
+        var ex = BuildExecutor(sink, metrics, FastOptions());
+
+        await ex.ExecuteAsync(
+            "p",
+            _ => Task.FromResult(1),
+            idempotencyKey: "order-999");
+
+        IdempotencyContext.CurrentKey.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithIdempotencyKey_SameKeyOnEveryRetry()
+    {
+        var sink = new CapturingSink();
+        var metrics = new InMemoryMetricSink();
+        var ex = BuildExecutor(sink, metrics, FastOptions(maxAttempts: 3));
+
+        var observedKeys = new List<string?>();
+        var attempts = 0;
+        await ex.ExecuteAsync(
+            "p",
+            _ =>
+            {
+                attempts++;
+                observedKeys.Add(IdempotencyContext.CurrentKey);
+                if (attempts < 2) throw new TimeoutException("blip");
+                return Task.FromResult("ok");
+            },
+            idempotencyKey: "order-777");
+
+        observedKeys.Should().HaveCount(2);
+        observedKeys.Should().AllBe("order-777");
+    }
+    // ------------------------------------------------------------------------
+    // v0.8.0 - Time budget propagation
+    // ------------------------------------------------------------------------
+
+    [Fact]
+    public async Task ExecuteAsync_WithNullTimeBudget_NoScopeActiveInsideOperation()
+    {
+        var sink = new CapturingSink();
+        var metrics = new InMemoryMetricSink();
+        var ex = BuildExecutor(sink, metrics, FastOptions());
+
+        double? observedRemaining = double.NaN;
+        await ex.ExecuteAsync(
+            "p",
+            _ => { observedRemaining = TimeBudgetContext.RemainingMs; return Task.FromResult(42); });
+
+        observedRemaining.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithTimeBudget_ScopeVisibleInsideOperation()
+    {
+        var sink = new CapturingSink();
+        var metrics = new InMemoryMetricSink();
+        var ex = BuildExecutor(sink, metrics, FastOptions());
+
+        double? observedRemaining = null;
+        await ex.ExecuteAsync(
+            "p",
+            _ => { observedRemaining = TimeBudgetContext.RemainingMs; return Task.FromResult(42); },
+            timeBudgetMs: 1000);
+
+        observedRemaining.Should().NotBeNull();
+        observedRemaining!.Value.Should().BeInRange(800, 1000);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithTimeBudget_ScopeRestoredAfterCall()
+    {
+        var sink = new CapturingSink();
+        var metrics = new InMemoryMetricSink();
+        var ex = BuildExecutor(sink, metrics, FastOptions());
+
+        await ex.ExecuteAsync(
+            "p",
+            _ => Task.FromResult(1),
+            timeBudgetMs: 500);
+
+        TimeBudgetContext.RemainingMs.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithZeroOrNegativeBudget_Throws()
+    {
+        var sink = new CapturingSink();
+        var metrics = new InMemoryMetricSink();
+        var ex = BuildExecutor(sink, metrics, FastOptions());
+
+        Func<Task> actZero = () => ex.ExecuteAsync("p", _ => Task.FromResult(1), timeBudgetMs: 0);
+        Func<Task> actNeg = () => ex.ExecuteAsync("p", _ => Task.FromResult(1), timeBudgetMs: -1);
+
+        await actZero.Should().ThrowAsync<ArgumentOutOfRangeException>();
+        await actNeg.Should().ThrowAsync<ArgumentOutOfRangeException>();
     }
 }

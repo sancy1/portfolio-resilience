@@ -1,14 +1,15 @@
-﻿// filepath: src/Portfolio.Resilience/Implementation/ResilienceExecutor.cs
-// layer: Implementation | package: Portfolio.Resilience | since: v0.3.0
-// purpose: The main entry point. Runs operations through retry -> circuit -> timeout with full observability.
-// ─────────────────────────────────────────────────────────────────────────────
+// filepath: src/Portfolio.Resilience/Implementation/ResilienceExecutor.cs
+// layer: Implementation | package: Portfolio.Resilience | since: v0.8.0
+// purpose: The main entry point. Runs operations through the full pipeline with idempotency-key propagation and time-budget enforcement.
+// -----------------------------------------------------------------------------
 // RELATIONSHIPS
 //   Implements : IResilienceExecutor
 //   Depends on : IResiliencePolicyRegistry, CompositePolicyBuilder, ResilienceEventEmitter,
-//                InMemoryMetricSink, ErrorClassifier, ResilienceException, CorrelationContext
-//   Used by    : every service that needs resilient calls (via DI extension in Stage F file 2)
-//   See also   : docs/executor.md, SPEC.md §Executor
-// ─────────────────────────────────────────────────────────────────────────────
+//                InMemoryMetricSink, ErrorClassifier, ResilienceException, CorrelationContext,
+//                IdempotencyContext
+//   Used by    : every service that needs resilient calls (via DI extension)
+//   See also   : docs/executor.md, docs/idempotency.md, SPEC.md section 18
+// -----------------------------------------------------------------------------
 
 using System.Diagnostics;
 using Portfolio.Resilience.Abstractions;
@@ -20,8 +21,8 @@ using Portfolio.Resilience.Sinks;
 namespace Portfolio.Resilience.Implementation;
 
 /// <summary>
-/// Runs operations through the full resilience pipeline:
-/// retry -> circuit -> timeout, with structured logging and latency metrics.
+/// Runs operations through the full resilience pipeline with structured logging,
+/// latency metrics, idempotency-key propagation, and time-budget enforcement.
 /// </summary>
 public sealed class ResilienceExecutor : IResilienceExecutor
 {
@@ -44,15 +45,23 @@ public sealed class ResilienceExecutor : IResilienceExecutor
         _metricSink = metricSink ?? new InMemoryMetricSink();
         _classifier = classifier ?? new ErrorClassifier();
     }
+
     /// <inheritdoc />
     public async Task<T> ExecuteAsync<T>(
         string policyName,
         Func<CancellationToken, Task<T>> operation,
         Func<CancellationToken, Task<T>>? fallback = null,
+        string? idempotencyKey = null,
+        int? timeBudgetMs = null,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(policyName);
         ArgumentNullException.ThrowIfNull(operation);
+
+        // Resolve the effective idempotency key: explicit wins, otherwise derive
+        // from the correlation ID so retries and hedged attempts of this call
+        // carry a single stable value.
+        var effectiveKey = idempotencyKey ?? IdempotencyContext.CurrentKey ?? IdempotencyContext.GenerateFromCorrelation();
 
         var definition = _registry.Resolve(policyName);
         var startedAt = Stopwatch.GetTimestamp();
@@ -60,6 +69,18 @@ public sealed class ResilienceExecutor : IResilienceExecutor
 
         _emitter.EmitCallStarted(policyName);
         _metricSink.BeginInFlight(policyName);
+
+        // Ambient propagation - both contexts are scoped to this call and
+        // restored on any exit path via the using blocks.
+        using var idempotencyScope = IdempotencyContext.Push(effectiveKey);
+
+        // Time budget: when set, layers below (retry, timeout, hedging)
+        // consult TimeBudgetContext.RemainingMs to cap their own ceilings.
+        // When null, no scope is created and behavior is byte-for-byte
+        // identical to v0.7.0.
+        using var budgetScope = timeBudgetMs is null
+            ? null
+            : TimeBudgetContext.Push(timeBudgetMs.Value);
 
         try
         {
@@ -84,7 +105,6 @@ public sealed class ResilienceExecutor : IResilienceExecutor
             var elapsed = Stopwatch.GetElapsedTime(startedAt);
             var classified = ClassifyAsResilienceException(policyName, ex, attempts, elapsed);
 
-            // Fallback path
             if (fallback is not null)
             {
                 _emitter.EmitFallbackUsed(policyName, reason: classified.Category.ToString());
@@ -123,17 +143,19 @@ public sealed class ResilienceExecutor : IResilienceExecutor
             _metricSink.EndInFlight(policyName);
         }
     }
+
     /// <inheritdoc />
     public Task ExecuteAsync(
         string policyName,
         Func<CancellationToken, Task> operation,
         Func<CancellationToken, Task>? fallback = null,
+        string? idempotencyKey = null,
+        int? timeBudgetMs = null,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(policyName);
         ArgumentNullException.ThrowIfNull(operation);
 
-        // Adapt to the generic path — wrap void op so it returns a sentinel value.
         return ExecuteAsync<object?>(
             policyName: policyName,
             operation: async attemptCt =>
@@ -148,6 +170,8 @@ public sealed class ResilienceExecutor : IResilienceExecutor
                     await fallback(fallbackCt).ConfigureAwait(false);
                     return null;
                 },
+            idempotencyKey: idempotencyKey,
+            timeBudgetMs: timeBudgetMs,
             ct: ct);
     }
 
@@ -155,10 +179,6 @@ public sealed class ResilienceExecutor : IResilienceExecutor
     // Internals
     // ------------------------------------------------------------------------
 
-    /// <summary>
-    /// Ensures the exception surfaced to callers is always a typed
-    /// <see cref="ResilienceException"/> carrying full context.
-    /// </summary>
     private ResilienceException ClassifyAsResilienceException(
         string policyName,
         Exception ex,

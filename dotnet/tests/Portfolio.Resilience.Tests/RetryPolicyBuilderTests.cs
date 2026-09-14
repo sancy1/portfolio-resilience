@@ -1,12 +1,12 @@
-﻿// filepath: tests/Portfolio.Resilience.Tests/RetryPolicyBuilderTests.cs
+// filepath: tests/Portfolio.Resilience.Tests/RetryPolicyBuilderTests.cs
 // layer: Tests | package: Portfolio.Resilience.Tests | since: v0.2.0
 // purpose: Verifies retry attempt counts, backoff formula, jitter bounds, and classifier gating.
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // RELATIONSHIPS
 //   Tests      : RetryPolicyBuilder (Policies/RetryPolicyBuilder.cs)
 //   Depends on : RetryOptions, ErrorClassifier, xUnit, FluentAssertions
 //   See also   : docs/retry.md
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 using FluentAssertions;
 using Portfolio.Resilience.Configuration;
@@ -118,7 +118,7 @@ public sealed class RetryPolicyBuilderTests
         fake.Delays.Should().HaveCount(2);
     }
     // ------------------------------------------------------------------------
-    // Classifier gating — permanent errors must not be retried
+    // Classifier gating � permanent errors must not be retried
     // ------------------------------------------------------------------------
 
     [Fact]
@@ -251,5 +251,82 @@ public sealed class RetryPolicyBuilderTests
             var delay = builder.CalculateDelay(attempt: 1, options);
             delay.TotalMilliseconds.Should().BeInRange(100.0, 130.0);
         }
+    }
+    // ------------------------------------------------------------------------
+    // v0.8.0 - Time budget interaction
+    // ------------------------------------------------------------------------
+
+    [Fact]
+    public async Task ExecuteAsync_WithBudgetExhausted_StopsRetryingEarly()
+    {
+        var fake = new FakeDelay();
+        var builder = new RetryPolicyBuilder(delayStrategy: fake.Delay);
+        var attempts = 0;
+
+        // Budget is 15ms; base delay is 100ms so the first retry would blow
+        // the budget. Expect: single attempt, no delays scheduled.
+        using var _ = Portfolio.Resilience.Correlation.TimeBudgetContext.Push(15);
+
+        Func<Task> act = () => builder.ExecuteAsync<int>(
+            ct => { attempts++; throw new TimeoutException("transient"); },
+            new RetryOptions { MaxAttempts = 5, BaseDelayMs = 100 });
+
+        await act.Should().ThrowAsync<TimeoutException>();
+        attempts.Should().Be(1);
+        fake.Delays.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithBudgetSufficient_RetriesNormally()
+    {
+        var fake = new FakeDelay();
+        var builder = new RetryPolicyBuilder(delayStrategy: fake.Delay);
+        var attempts = 0;
+
+        // Budget is 5 seconds; base delay is 10ms. Plenty of room.
+        using var _ = Portfolio.Resilience.Correlation.TimeBudgetContext.Push(5000);
+
+        Func<Task> act = () => builder.ExecuteAsync<int>(
+            ct => { attempts++; throw new TimeoutException("transient"); },
+            new RetryOptions { MaxAttempts = 2, BaseDelayMs = 10 });
+
+        await act.Should().ThrowAsync<TimeoutException>();
+        attempts.Should().Be(3);        // 1 initial + 2 retries
+        fake.Delays.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_NoBudgetScope_RetriesAsBefore()
+    {
+        var fake = new FakeDelay();
+        var builder = new RetryPolicyBuilder(delayStrategy: fake.Delay);
+        var attempts = 0;
+
+        // No budget scope active - v0.7.0 behavior should apply.
+        Func<Task> act = () => builder.ExecuteAsync<int>(
+            ct => { attempts++; throw new TimeoutException("transient"); },
+            new RetryOptions { MaxAttempts = 2, BaseDelayMs = 10 });
+
+        await act.Should().ThrowAsync<TimeoutException>();
+        attempts.Should().Be(3);
+        fake.Delays.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithBudgetExhausted_RethrowsOriginalException()
+    {
+        var fake = new FakeDelay();
+        var builder = new RetryPolicyBuilder(delayStrategy: fake.Delay);
+
+        using var _ = Portfolio.Resilience.Correlation.TimeBudgetContext.Push(15);
+
+        Func<Task> act = () => builder.ExecuteAsync<int>(
+            ct => throw new InvalidOperationException("boom"),
+            new RetryOptions { MaxAttempts = 3, BaseDelayMs = 100, RetryOnPermanent = true });
+
+        // The exception type must be preserved (not wrapped in a
+        // ResilienceException by the retry layer).
+        var ex = await act.Should().ThrowAsync<InvalidOperationException>();
+        ex.Which.Message.Should().Be("boom");
     }
 }
