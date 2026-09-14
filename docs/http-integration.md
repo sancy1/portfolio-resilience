@@ -118,6 +118,68 @@ No logging. The handler does all of it.
 
 Same behavior, injected as `AuthClient` instead of through the factory.
 
+### The one-liner — `AddStandardResilienceHandler`
+
+For most HTTP clients you want resilience with **sensible defaults** and no
+policy definition ceremony. One call does it:
+
+    builder.Services
+        .AddHttpClient("auth-service", c => c.BaseAddress = new Uri(url))
+        .AddStandardResilienceHandler();
+
+Behind the scenes, the extension creates a policy named `standard` (if one is
+not already registered) and routes every request through it.
+
+**The standard policy contains:**
+
+| Feature | Enabled | Configuration |
+|---------|---------|---------------|
+| Retry | ✅ | `MaxAttempts = 3`, `BaseDelayMs = 100`, `MaxDelayMs = 5000`, `JitterRatio = 0.3` |
+| Circuit breaker | ✅ | `FailureThreshold = 5`, `OpenDurationSeconds = 30` |
+| Timeout | ✅ | `TimeoutMs = 30_000` (30 seconds) |
+| Rate limiter | ❌ | Off — not every HTTP call needs rate limiting |
+| Bulkhead | ❌ | Off — not every HTTP call needs concurrency capping |
+| Hedging | ❌ | Off — **hedging is never enabled by default**, because it duplicates requests |
+
+**Customize the standard policy inline:**
+
+    builder.Services
+        .AddHttpClient("auth-service", c => c.BaseAddress = new Uri(url))
+        .AddStandardResilienceHandler(p =>
+        {
+            p.Retry.MaxAttempts = 5;
+            p.Timeout.TimeoutMs = 10_000;
+        });
+
+The callback runs once, on the fresh policy, before it is registered.
+
+**Override it entirely.** If you register your own policy named `standard`
+via `AddPolicy` **before** calling `AddStandardResilienceHandler()`, your
+policy wins. The extension detects the existing registration and does nothing.
+
+    builder.Services.AddPortfolioResilience(r => r
+        .AddPolicy("standard", p =>
+        {
+            p.Retry.MaxAttempts = 10;
+            p.Timeout.TimeoutMs = 60_000;
+        }));
+
+    builder.Services
+        .AddHttpClient("auth-service")
+        .AddStandardResilienceHandler();   // uses YOUR standard policy
+
+**Call order does not matter** between `AddStandardResilienceHandler()` and
+`AddPortfolioResilience()`. The policy is injected lazily at resolve time,
+and every registration made before the first resolve is seen.
+
+**When not to use the one-liner:**
+
+- The client needs a **specific per-dependency policy** (rate limit, bulkhead,
+  hedging, or non-standard retry counts). Register that policy and use
+  `AddResilientHandler("your-policy-name")` instead.
+- The client makes **non-idempotent writes** and you might be tempted to enable
+  hedging later. The `standard` policy deliberately does not enable hedging —
+  keep it that way for writes.
 ## What the caller sees on failure
 
 When the pipeline exhausts retries or the circuit is open, the caller receives a
