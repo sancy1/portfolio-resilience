@@ -113,27 +113,27 @@ summarizes where the two libraries overlap and where each has an edge.
 
 | Feature | Portfolio.Resilience | Polly | MS.Extensions.Http.Resilience |
 |---------|---------------------|-------|-------------------------------|
-| Retry + backoff + jitter | ✅ | ✅ | ✅ |
-| Circuit breaker | ✅ | ✅ | ✅ |
-| Timeout (per-attempt) | ✅ | ✅ | ✅ |
-| Fallback | ✅ | ✅ | ✅ |
-| Rate limiter (4 strategies) | ✅ | ✅ | ✅ |
-| Bulkhead | ✅ | ✅ | ✅ |
-| Hedging | ✅ | ✅ | ✅ |
-| Idempotency key propagation | ✅ | ❌ | ❌ |
-| PCI-safe event scrubbing | ✅ | ❌ | ❌ |
-| Timeout budget propagation | ✅ | ❌ | ❌ |
-| Payment-safe pipeline preset | ✅ | ❌ | ❌ |
-| Policy composition (Wrap) | ✅ | ✅ | ✅ |
-| OpenTelemetry integration | ✅ | ✅ | ✅ |
-| Compile-time analyzers | ✅ | ❌ | ✅ |
-| `AddStandardResilienceHandler()` | ✅ | ❌ | ✅ |
-| Chaos engineering | 🔜 v1.x | ✅ | ❌ |
+| Retry + backoff + jitter | âœ… | âœ… | âœ… |
+| Circuit breaker | âœ… | âœ… | âœ… |
+| Timeout (per-attempt) | âœ… | âœ… | âœ… |
+| Fallback | âœ… | âœ… | âœ… |
+| Rate limiter (4 strategies) | âœ… | âœ… | âœ… |
+| Bulkhead | âœ… | âœ… | âœ… |
+| Hedging | âœ… | âœ… | âœ… |
+| Idempotency key propagation | âœ… | âŒ | âŒ |
+| PCI-safe event scrubbing | âœ… | âŒ | âŒ |
+| Timeout budget propagation | âœ… | âŒ | âŒ |
+| Payment-safe pipeline preset | âœ… | âŒ | âŒ |
+| Policy composition (Wrap) | âœ… | âœ… | âœ… |
+| OpenTelemetry integration | âœ… | âœ… | âœ… |
+| Compile-time analyzers | âœ… | âŒ | âœ… |
+| `AddStandardResilienceHandler()` | âœ… | âŒ | âœ… |
+| Chaos engineering | ðŸ”œ v1.x | âœ… | âŒ |
 | Cloud sinks | ecosystem | ecosystem | ecosystem |
-| Ambient correlation IDs | ✅ built-in | manual | partial |
-| Cross-language SPEC | ✅ | ❌ | ❌ |
-| Latency percentiles without OTel | ✅ | OTel only | OTel only |
-| Zero core dependencies | ✅ | ✅ | ❌ (Polly) |
+| Ambient correlation IDs | âœ… built-in | manual | partial |
+| Cross-language SPEC | âœ… | âŒ | âŒ |
+| Latency percentiles without OTel | âœ… | OTel only | OTel only |
+| Zero core dependencies | âœ… | âœ… | âŒ (Polly) |
 
 ### What we bring that Polly does not
 
@@ -744,6 +744,27 @@ HTTP handler, the standard handler, the OpenTelemetry sinks, the Roslyn
 analyzers, and the four v0.8.0 features (idempotency key propagation,
 PCI-safe event scrubbing, timeout budget propagation, and the payment-safe
 pipeline preset).
+
+## Try it yourself
+
+A runnable console sample lives in `dotnet/samples/Samples.App/`. It consumes
+the **published** `Portfolio.Resilience` package from nuget.org, exercises all
+ten capabilities end-to-end, prints a `[PASS]` line per scenario, and exits 0
+on success. It is both an executable reference for consumers and a compatibility
+canary for future .NET SDK and library versions.
+
+    dotnet run --project dotnet\samples\Samples.App\Samples.App.csproj
+
+Expected output: ten green `[PASS]` lines, an `ALL PASSED` summary, exit code 0.
+Total wall-clock time is about 7 seconds.
+
+The sample's own tests run with:
+
+    dotnet test dotnet\samples\Samples.App.Tests\Samples.App.Tests.csproj
+
+See [`dotnet/samples/Samples.App/README.md`](dotnet/samples/Samples.App/README.md)
+for scenario-by-scenario breakdown, run instructions, and a list of findings
+observed against the shipped `0.8.0` package.
 
 ## Design principles
 

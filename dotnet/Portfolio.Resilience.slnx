@@ -1,4 +1,4 @@
-﻿<Solution>
+<Solution>
   <Folder Name="/src/">
     <Project Path="src/Portfolio.Resilience/Portfolio.Resilience.csproj" />
     <Project Path="src/Portfolio.Resilience.OpenTelemetry/Portfolio.Resilience.OpenTelemetry.csproj" />
@@ -8,5 +8,9 @@
     <Project Path="tests/Portfolio.Resilience.Tests/Portfolio.Resilience.Tests.csproj" />
     <Project Path="tests/Portfolio.Resilience.OpenTelemetry.Tests/Portfolio.Resilience.OpenTelemetry.Tests.csproj" />
     <Project Path="tests/Portfolio.Resilience.Analyzers.Tests/Portfolio.Resilience.Analyzers.Tests.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/Samples.App/Samples.App.csproj" />
+    <Project Path="samples/Samples.App.Tests/Samples.App.Tests.csproj" />
   </Folder>
 </Solution>
