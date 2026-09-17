@@ -77,8 +77,25 @@ public static class BulkheadScenario
             }, ct));
         }
 
-        // Give the bulkhead time to admit, queue, or reject each call.
-        await Task.Delay(200, ct);
+        // Wait for the steady state to settle: maxConcurrency operations running
+        // AND at least one call rejected because the queue is full. Poll instead
+        // of a fixed delay so slow CI runners have time to dispatch all tasks to
+        // the bulkhead. A 5-second deadline is the backstop.
+        var settleDeadline = DateTime.UtcNow.AddSeconds(5);
+        while (true)
+        {
+            var startedNow = Volatile.Read(ref started);
+            var rejectedNow = Volatile.Read(ref rejected);
+            if (startedNow == maxConcurrency && rejectedNow >= 1)
+            {
+                break;
+            }
+            if (DateTime.UtcNow >= settleDeadline)
+            {
+                break;
+            }
+            await Task.Delay(10, ct);
+        }
 
         var startedDuring = Volatile.Read(ref started);
         var rejectedDuring = Volatile.Read(ref rejected);
