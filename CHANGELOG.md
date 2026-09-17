@@ -9,6 +9,67 @@ purpose:  Version history for the resilience library.
 All notable changes to `Portfolio.Resilience`. Format follows [Keep a Changelog](https://keepachangelog.com/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [0.8.1] - 2026-09-17
+
+Documentation polish. **No runtime change** - the library behaviour is identical
+to 0.8.0. This release makes the shipped documentation and XML IntelliSense
+match the actual API surface, and adds cross-links between the repository,
+nuget.org, the sample, and a real-world consumer case study.
+
+### Fixed - shipped XML documentation
+
+- **`ResilienceEvent`** (`Events/`) - the 10 public properties (`EventType`,
+  `PolicyName`, `CorrelationId`, `TimestampUtc`, `Attempt`, `DurationMs`,
+  `ErrorCategory`, `ErrorMessage`, `ErrorType`, `Metadata`) now carry `///`
+  summaries. The shipped `Portfolio.Resilience.xml` previously had a
+  type-level summary only, so IntelliSense showed no tooltip on the individual
+  properties. Consumers relying on hover documentation now see the full
+  contract for each field.
+- **`CompositePolicyBuilder`** (`Policies/`) - the type-level summary now
+  shows `Hedging` in the default pipeline order. The class summary previously
+  listed `RateLimiter -> Bulkhead -> Retry -> Circuit -> Timeout`, omitting
+  the hedging layer that the constructor accepts and that the pipeline runs.
+  The `RELATIONSHIPS` header and the `<code>` block are both corrected.
+
+### Changed - documentation
+
+- **`README.md`** - the Polly comparison table now uses explicit states
+  (`Yes`, `Manual`, `Not built in`, `Per-attempt only`) instead of emoji
+  checkmarks. The table no longer overstates gaps: idempotency keys and
+  timeout budgets are marked `Manual` in Polly (they are patterns a caller
+  can write), not `Not built in`. The redundant `Cloud sinks` row was
+  removed. The `Zero core dependencies` row now reads
+  `Not built in (depends on Polly)` for `MS.Extensions.Http.Resilience`.
+- **`README.md`** - a Quick links block at the top groups every external
+  resource (nuget.org, GitHub, GitHub Actions, sample, sample tests,
+  FEATURES.md, QUICKSTART.md, companion packages).
+- **`README.md`** - a Production section names **File-Ferry v1.0.0** as the
+  first published consumer, with links to the GitHub release and the source
+  repository. File-Ferry uses the library for every filesystem operation
+  across three named policies.
+- **`README.md`** - the entire file is now ASCII-only. A previous edit had
+  corrupted the emoji bytes into mojibake; the rewrite removes the issue
+  permanently and improves rendering in terminals, CI logs, and non-emoji
+  readers.
+
+### Compatibility
+
+- Drop-in replacement for `0.8.0`. No public API changes.
+- No dependency changes. The core package remains zero-dependency.
+- Existing call sites compile unchanged.
+
+### Notes
+
+This release was prompted by integration feedback from a real consumer
+(File-Ferry) whose retrospective flagged that the FEATURES documentation had
+drifted from the shipped API surface - specifically the
+`ErrorClassification` configuration shape and the `...TypeNames` property
+naming on `ErrorClassificationOptions`. Those findings are recorded in the
+sample documentation (`dotnet/samples/Samples.App/FEATURES.md`, Sections 18
+and 24) so future consumers do not hit the same drift.
+
+See [Keep a Changelog](https://keepachangelog.com/) for the format used above.
+
 ## [0.8.0] - 2026-09-14
 
 ### Added - Idempotency key propagation
@@ -77,84 +138,84 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - Breakdown: 468 core tests + 37 OpenTelemetry tests + 18 analyzer tests.
 ## [0.7.0] - 2026-09-14
 
-### Added � Policy Composition
+### Added ï¿½ Policy Composition
 
-- **`IResiliencePolicy`** (`Abstractions/`) � a single interface that every policy builder implements. Enables custom pipeline composition.
-- **`ResiliencePipeline`** (`Policies/`) � an ordered sequence of `IResiliencePolicy` layers, executed outermost-first. Constructed via `ResiliencePipeline.Wrap(...)` or the constructor.
-- **`ResiliencePipelineBuilder`** (`Policies/`) � fluent builder (`Add`, `AddIf`, `WithName`, `Build`) for constructing a pipeline with conditionals.
+- **`IResiliencePolicy`** (`Abstractions/`) ï¿½ a single interface that every policy builder implements. Enables custom pipeline composition.
+- **`ResiliencePipeline`** (`Policies/`) ï¿½ an ordered sequence of `IResiliencePolicy` layers, executed outermost-first. Constructed via `ResiliencePipeline.Wrap(...)` or the constructor.
+- **`ResiliencePipelineBuilder`** (`Policies/`) ï¿½ fluent builder (`Add`, `AddIf`, `WithName`, `Build`) for constructing a pipeline with conditionals.
 - `RetryPolicyBuilder`, `CircuitPolicyBuilder`, `TimeoutPolicyBuilder`, `RateLimiterPolicyBuilder`, and `BulkheadPolicyBuilder` now implement `IResiliencePolicy`.
 
-### Added � OpenTelemetry integration
+### Added ï¿½ OpenTelemetry integration
 
-- **New NuGet package: `Portfolio.Resilience.OpenTelemetry`** � optional package that exports resilience events and metrics via OpenTelemetry.
-- **`OpenTelemetryLogSink`** � maps every `ResilienceEvent` to an OTel log record with structured `resilience.*` attributes.
-- **`OpenTelemetryMetricSink`** � maps `IMetricSink.RecordCall` to OTel histogram `resilience.call.duration_ms` and counters `resilience.call.succeeded_total` / `resilience.call.failed_total`.
-- **`OpenTelemetryBuilderExtensions`** � one-line registration: `services.AddPortfolioResilienceOpenTelemetry()`.
+- **New NuGet package: `Portfolio.Resilience.OpenTelemetry`** ï¿½ optional package that exports resilience events and metrics via OpenTelemetry.
+- **`OpenTelemetryLogSink`** ï¿½ maps every `ResilienceEvent` to an OTel log record with structured `resilience.*` attributes.
+- **`OpenTelemetryMetricSink`** ï¿½ maps `IMetricSink.RecordCall` to OTel histogram `resilience.call.duration_ms` and counters `resilience.call.succeeded_total` / `resilience.call.failed_total`.
+- **`OpenTelemetryBuilderExtensions`** ï¿½ one-line registration: `services.AddPortfolioResilienceOpenTelemetry()`.
 - The order-independent composition pattern allows calling `AddPortfolioResilienceOpenTelemetry()` before or after `AddPortfolioResilience(...)`.
 - Dependency on `OpenTelemetry.Api` 1.15.3 (patched version; earlier 1.11.0 was vulnerable per GHSA-8785-wc3w-h8q6 and GHSA-g94r-2vxg-569j).
 
-### Added � Hedging
+### Added ï¿½ Hedging
 
-- **`HedgingOptions`** (`Configuration/`) � 8 fields: `Enabled`, `MaxAttempts`, `DelayMs`, `ExponentialBackoff`, `AttemptTimeoutMs`, `CancelOnSuccess`, `EmitAttemptEvents`, `RejectionCategory`. Includes a `Validate(string policyName)` method.
-- **`HedgingPolicyBuilder`** (`Policies/`) � fires parallel attempts with a stagger delay; the first success wins. Hedges only fire if no prior attempt has already succeeded.
+- **`HedgingOptions`** (`Configuration/`) ï¿½ 8 fields: `Enabled`, `MaxAttempts`, `DelayMs`, `ExponentialBackoff`, `AttemptTimeoutMs`, `CancelOnSuccess`, `EmitAttemptEvents`, `RejectionCategory`. Includes a `Validate(string policyName)` method.
+- **`HedgingPolicyBuilder`** (`Policies/`) ï¿½ fires parallel attempts with a stagger delay; the first success wins. Hedges only fire if no prior attempt has already succeeded.
 - **Three new event types**: `ResilienceEventType.HedgeWon = 11`, `HedgeLost = 12`, `HedgeCancelled = 13`.
-- **`LoggingOptions.EmitHedgeEvents`** � one toggle for all three hedge events (default: `true`).
-- **`PolicyDefinition.Hedging`** � new property.
-- **`ResilienceEventEmitter.EmitHedgeWon/EmitHedgeLost/EmitHedgeCancelled`** � three new convenience emitters.
+- **`LoggingOptions.EmitHedgeEvents`** ï¿½ one toggle for all three hedge events (default: `true`).
+- **`PolicyDefinition.Hedging`** ï¿½ new property.
+- **`ResilienceEventEmitter.EmitHedgeWon/EmitHedgeLost/EmitHedgeCancelled`** ï¿½ three new convenience emitters.
 - **Safety:** hedging is not safe for non-idempotent operations unless the downstream deduplicates on an idempotency key. Documented in `docs/hedging.md` with a prominent warning. A startup warning is logged once per policy that enables hedging.
 
-### Added � Standard handler
+### Added ï¿½ Standard handler
 
-- **`HttpClientBuilderExtensions.AddStandardResilienceHandler(Action<PolicyDefinition>? configure = null)`** � registers a `"standard"` policy with sensible defaults (retry + circuit + timeout; rate limiter, bulkhead, and hedging off) and wires every request through it.
-- **`StandardPolicy`** (`Configuration/`) � the built-in policy definition (`Name = "standard"`) used by the handler.
+- **`HttpClientBuilderExtensions.AddStandardResilienceHandler(Action<PolicyDefinition>? configure = null)`** ï¿½ registers a `"standard"` policy with sensible defaults (retry + circuit + timeout; rate limiter, bulkhead, and hedging off) and wires every request through it.
+- **`StandardPolicy`** (`Configuration/`) ï¿½ the built-in policy definition (`Name = "standard"`) used by the handler.
 - **User overrides win.** If a caller registers their own `"standard"` policy via `AddPolicy`, the extension does not overwrite it.
 - **Order-independent.** Registering the handler before or after `AddPortfolioResilience` both work; the post-configure pattern resolves the policy at container-build time.
 
-### Added � Roslyn analyzers
+### Added ï¿½ Roslyn analyzers
 
-- **New NuGet package: `Portfolio.Resilience.Analyzers`** � optional package that ships two compile-time analyzers.
-- **PR0001 � `HttpClientBypassAnalyzer`** � warns when a class obtains an `HttpClient` from `IHttpClientFactory` and calls it directly without going through the resilience pipeline. Includes an `IResilienceExecutor` guard to prevent false positives.
-- **PR0002 � `MisconfigurationAnalyzer`** � warns when an `AddPolicy` lambda enables a feature (`RateLimiter`, `Bulkhead`, `Hedging`) but sets its companion value to `0` or negative, or sets `Timeout.TimeoutMs` / `Retry.MaxAttempts` to a negative value.
+- **New NuGet package: `Portfolio.Resilience.Analyzers`** ï¿½ optional package that ships two compile-time analyzers.
+- **PR0001 ï¿½ `HttpClientBypassAnalyzer`** ï¿½ warns when a class obtains an `HttpClient` from `IHttpClientFactory` and calls it directly without going through the resilience pipeline. Includes an `IResilienceExecutor` guard to prevent false positives.
+- **PR0002 ï¿½ `MisconfigurationAnalyzer`** ï¿½ warns when an `AddPolicy` lambda enables a feature (`RateLimiter`, `Bulkhead`, `Hedging`) but sets its companion value to `0` or negative, or sets `Timeout.TimeoutMs` / `Retry.MaxAttempts` to a negative value.
 - Both rules are enabled by default and suppressible via `#pragma warning disable` or `.editorconfig`.
 - The analyzer project targets `netstandard2.0` (required for Roslyn analyzers) and ships with `<EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>`.
 
 ### Changed
 
-- **`CompositePolicyBuilder`** � pipeline is now assembled by composing `IResiliencePolicy` layers via `ResiliencePipeline`. The default order remains `RateLimiter -> Bulkhead -> Retry -> Circuit -> Timeout`. Behavior is byte-for-byte identical to v0.6.x; only the internal mechanism changed.
-- **`ServiceCollectionExtensions.AddPortfolioResilience`** � the `IResiliencePolicyRegistry` registration now applies all registered `Action<ResilienceOptions>` singletons before constructing the registry. This enables post-registration policy injection by extension packages (such as `AddStandardResilienceHandler`).
-- **`ConfigurationExtensions.LoadFromConfiguration`** � binds the new `Hedging` section.
+- **`CompositePolicyBuilder`** ï¿½ pipeline is now assembled by composing `IResiliencePolicy` layers via `ResiliencePipeline`. The default order remains `RateLimiter -> Bulkhead -> Retry -> Circuit -> Timeout`. Behavior is byte-for-byte identical to v0.6.x; only the internal mechanism changed.
+- **`ServiceCollectionExtensions.AddPortfolioResilience`** ï¿½ the `IResiliencePolicyRegistry` registration now applies all registered `Action<ResilienceOptions>` singletons before constructing the registry. This enables post-registration policy injection by extension packages (such as `AddStandardResilienceHandler`).
+- **`ConfigurationExtensions.LoadFromConfiguration`** ï¿½ binds the new `Hedging` section.
 
 ### Fixed
 
-- **Hedging deadlock** � `HedgingPolicyBuilder.WaitForFirstSuccessOrAllFailAsync` could deadlock when one hedged attempt succeeded while another was pending indefinitely. Fixed by checking for already-completed winners before awaiting the pending set.
-- **Hedging duplicate-fire** � the initial implementation fired all attempts unconditionally. Now each hedge fires only if no prior attempt has succeeded within its stagger delay.
-- **Hedging per-attempt timeout** � `HedgingOptions.AttemptTimeoutMs` was silently ignored in an early iteration. Now honored via a linked `CancellationTokenSource` per attempt.
-- **`OpenTelemetryLogSink` event filtering** � the sink no longer short-circuits on `ILogger.IsEnabled`. Filtering is the logger pipeline's responsibility. `call_started` maps to `Debug` (was `Trace`, which is filtered by most loggers).
-- **Security** � `OpenTelemetry.Api` bumped from `1.11.0` (two advisories) to `1.15.3`.
+- **Hedging deadlock** ï¿½ `HedgingPolicyBuilder.WaitForFirstSuccessOrAllFailAsync` could deadlock when one hedged attempt succeeded while another was pending indefinitely. Fixed by checking for already-completed winners before awaiting the pending set.
+- **Hedging duplicate-fire** ï¿½ the initial implementation fired all attempts unconditionally. Now each hedge fires only if no prior attempt has succeeded within its stagger delay.
+- **Hedging per-attempt timeout** ï¿½ `HedgingOptions.AttemptTimeoutMs` was silently ignored in an early iteration. Now honored via a linked `CancellationTokenSource` per attempt.
+- **`OpenTelemetryLogSink` event filtering** ï¿½ the sink no longer short-circuits on `ILogger.IsEnabled`. Filtering is the logger pipeline's responsibility. `call_started` maps to `Debug` (was `Trace`, which is filtered by most loggers).
+- **Security** ï¿½ `OpenTelemetry.Api` bumped from `1.11.0` (two advisories) to `1.15.3`.
 
 ### Documentation
 
-- **New:** `docs/composition.md` � pipeline composition, both `Wrap` and builder styles, real-world patterns, custom layers.
-- **New:** `docs/hedging.md` � hedging semantics with a prominent non-idempotency safety section.
-- **New:** `docs/opentelemetry.md` � the OTel package's sinks, attribute mappings, one-liner registration.
-- **New:** `docs/analyzers.md` � the analyzer package, PR0001 and PR0002 walkthroughs, `.editorconfig` examples, troubleshooting.
-- **Updated:** `docs/timeout.md`, `docs/metrics.md`, `docs/error-classification.md` � appended "How to use it � a worked walkthrough" sections.
-- **Updated:** `docs/metrics.md` � removed a duplicated `## Test coverage` section; corrected stale "Stage C/E/F/H" references.
-- **Updated:** `docs/http-integration.md` � new section on `AddStandardResilienceHandler()`.
-- **Updated:** `docs/README.md`, `docs/api-stability.md`, `README.md` � new doc and feature entries.
-- **Updated:** `SPEC.md` � new �14 (Policy composition), �15 (OpenTelemetry integration), �16 (Hedging), �17 (Analyzers).
+- **New:** `docs/composition.md` ï¿½ pipeline composition, both `Wrap` and builder styles, real-world patterns, custom layers.
+- **New:** `docs/hedging.md` ï¿½ hedging semantics with a prominent non-idempotency safety section.
+- **New:** `docs/opentelemetry.md` ï¿½ the OTel package's sinks, attribute mappings, one-liner registration.
+- **New:** `docs/analyzers.md` ï¿½ the analyzer package, PR0001 and PR0002 walkthroughs, `.editorconfig` examples, troubleshooting.
+- **Updated:** `docs/timeout.md`, `docs/metrics.md`, `docs/error-classification.md` ï¿½ appended "How to use it ï¿½ a worked walkthrough" sections.
+- **Updated:** `docs/metrics.md` ï¿½ removed a duplicated `## Test coverage` section; corrected stale "Stage C/E/F/H" references.
+- **Updated:** `docs/http-integration.md` ï¿½ new section on `AddStandardResilienceHandler()`.
+- **Updated:** `docs/README.md`, `docs/api-stability.md`, `README.md` ï¿½ new doc and feature entries.
+- **Updated:** `SPEC.md` ï¿½ new ï¿½14 (Policy composition), ï¿½15 (OpenTelemetry integration), ï¿½16 (Hedging), ï¿½17 (Analyzers).
 
 ### Compatibility
 
 - **No breaking changes.** All additions are additive. Existing consumers can upgrade from `0.6.x` to `0.7.0` without code changes.
-- The `ResilienceEventType` enum gains values `11`, `12`, and `13`. Existing numeric values `0`�`10` are unchanged.
+- The `ResilienceEventType` enum gains values `11`, `12`, and `13`. Existing numeric values `0`ï¿½`10` are unchanged.
 - The `PolicyDefinition` class gains a `Hedging` property. Existing code that does not use it is unaffected.
 - `CompositePolicyBuilder`'s constructor gains an optional `HedgingPolicyBuilder? hedging = null` parameter. Existing construction sites are unaffected.
 - Existing policies that do not set `Hedging.Enabled = true` behave exactly as in `0.6.x`.
 
 ### Known limitations
 
-- **`LoggingOptions` toggles are not yet consulted by the emitter** � this is unchanged from `0.6.0`. Wiring the toggles to emission is a future item.
+- **`LoggingOptions` toggles are not yet consulted by the emitter** ï¿½ this is unchanged from `0.6.0`. Wiring the toggles to emission is a future item.
 
 ### Test suite
 
@@ -177,39 +238,39 @@ versioning follows [Semantic Versioning](https://semver.org/).
 - **No code changes.** Binary-compatible with 0.6.0. All 301 tests pass.
 ## [0.6.0] - 2026-09-13
 
-### Added � Rate Limiter
+### Added ï¿½ Rate Limiter
 
-- **`RateLimiterOptions`** � configuration model with `Enabled`, `Strategy`,
+- **`RateLimiterOptions`** ï¿½ configuration model with `Enabled`, `Strategy`,
   `PermitLimit`, `WindowSeconds`, `QueueLimit`, `QueueTimeoutMs`,
   `RejectionCategory`, and a `Validate(string policyName)` method that returns
   human-readable warnings for suspicious combinations.
-- **`RateLimitStrategy`** � enum for the four strategies: `TokenBucket`,
+- **`RateLimitStrategy`** ï¿½ enum for the four strategies: `TokenBucket`,
   `SlidingWindow`, `FixedWindow`, `ConcurrencyLimit`.
-- **`RateLimiterPolicyBuilder`** � executes an operation under a rate limiter.
+- **`RateLimiterPolicyBuilder`** ï¿½ executes an operation under a rate limiter.
   Each strategy has its own acquire path; rejections emit a `rate_limited`
   event and throw `ResilienceException` with the configured
   `RejectionCategory`.
 - 18 tests in `RateLimiterPolicyBuilderTests.cs` covering all four strategies,
   queue behavior, rejection metadata, and category configuration.
 
-### Added � Bulkhead
+### Added ï¿½ Bulkhead
 
-- **`BulkheadOptions`** � configuration model with `Enabled`, `MaxConcurrency`,
+- **`BulkheadOptions`** ï¿½ configuration model with `Enabled`, `MaxConcurrency`,
   `MaxQueue`, `QueueTimeoutMs`, `RejectionCategory`, and `Validate`.
-- **`BulkheadPolicyBuilder`** � caps concurrent calls via a `SemaphoreSlim`
+- **`BulkheadPolicyBuilder`** ï¿½ caps concurrent calls via a `SemaphoreSlim`
   held across the operation. Excess callers wait in a bounded queue; callers
   beyond the queue are rejected with `queue_full`.
 - 13 tests in `BulkheadPolicyBuilderTests.cs` covering the concurrency cap,
   queue behavior, slot release on success and failure, and rejection metadata.
 
-### Added � Events and pipeline
+### Added ï¿½ Events and pipeline
 
 - **`ResilienceEventType.RateLimited = 9`** and
-  **`ResilienceEventType.BulkheadRejected = 10`** � new event types.
+  **`ResilienceEventType.BulkheadRejected = 10`** ï¿½ new event types.
 - **`ResilienceEventEmitter.EmitRateLimited(...)`** and
-  **`EmitBulkheadRejected(...)`** � convenience emitters with the field names
-  defined in SPEC �12 and �13.
-- **`LoggingOptions.EmitRateLimited`** and **`EmitBulkheadRejected`** �
+  **`EmitBulkheadRejected(...)`** ï¿½ convenience emitters with the field names
+  defined in SPEC ï¿½12 and ï¿½13.
+- **`LoggingOptions.EmitRateLimited`** and **`EmitBulkheadRejected`** ï¿½
   per-event-type toggles (both default to `true`).
 - **`CompositePolicyBuilder`** now chains
   `RateLimiter ? Bulkhead ? Retry ? Circuit ? Timeout` and gains two optional
@@ -217,7 +278,7 @@ versioning follows [Semantic Versioning](https://semver.org/).
   unaffected.
 - **`PolicyDefinition`** gains `RateLimiter` and `Bulkhead` properties.
 
-### Added � Configuration
+### Added ï¿½ Configuration
 
 - **`ConfigurationExtensions`** now binds `RateLimiter` and `Bulkhead`
   sections from `IConfiguration`.
@@ -227,7 +288,7 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **`CompositePolicyBuilder`** � pipeline order is now
+- **`CompositePolicyBuilder`** ï¿½ pipeline order is now
   `RateLimiter ? Bulkhead ? Retry ? Circuit ? Timeout`. When `Enabled = true`
   is set on a policy but the corresponding builder was not provided to the
   pipeline, execution throws `InvalidOperationException` (fail loud, not
@@ -239,20 +300,20 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Documentation
 
-- **`docs/rate-limiter.md`** � full doc: four strategies, strategy-to-field
+- **`docs/rate-limiter.md`** ï¿½ full doc: four strategies, strategy-to-field
   matrix, queue behavior, rejection metadata, configuration, validation
   warnings, common mistakes, testing.
-- **`docs/bulkhead.md`** � full doc: concurrency cap, waiter queue, slot
+- **`docs/bulkhead.md`** ï¿½ full doc: concurrency cap, waiter queue, slot
   release semantics, difference from rate limiting, configuration,
   validation warnings, common mistakes, testing.
-- **`docs/README.md`** � refreshed index: all current docs listed, stale
+- **`docs/README.md`** ï¿½ refreshed index: all current docs listed, stale
   `Stage D/E/F/G/H` markers removed, test count corrected.
-- **`SPEC.md`** � �7.1 event table extended with `rate_limited` and
-  `bulkhead_rejected`; new �12 (Rate limiter) and �13 (Bulkhead); version
+- **`SPEC.md`** ï¿½ ï¿½7.1 event table extended with `rate_limited` and
+  `bulkhead_rejected`; new ï¿½12 (Rate limiter) and ï¿½13 (Bulkhead); version
   bumped to `0.6.0`.
-- **`README.md`** � feature table, quick-start, pipeline diagram, comparison
+- **`README.md`** ï¿½ feature table, quick-start, pipeline diagram, comparison
   table, roadmap, and test count all updated for v0.6.0.
-- **`docs/api-stability.md`** � new public types added; total count corrected
+- **`docs/api-stability.md`** ï¿½ new public types added; total count corrected
   to 52; compatibility contract extended with rate limiter and bulkhead
   clauses.
 
@@ -279,21 +340,21 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Documentation
 
-- **README.md: new "Logging scenarios" section** � five configurations for
+- **README.md: new "Logging scenarios" section** ï¿½ five configurations for
   choosing where resilience events go:
   - Local-only (ConsoleLogSink or FileLogSink)
   - Cloud-only (custom ILogSink implementation)
   - Hybrid (local + cloud via CompositeLogSink)
-  - Silent (NullLogSink � no configuration)
+  - Silent (NullLogSink ï¿½ no configuration)
   - Includes a decision table mapping each scenario to the API call.
-- **README.md: expanded "Comparison with other libraries"** � added side-by-side
+- **README.md: expanded "Comparison with other libraries"** ï¿½ added side-by-side
   feature table with Polly and Microsoft.Extensions.Http.Resilience.
-- **README.md: enriched "Roadmap" section** � versioned plan through v1.x.
+- **README.md: enriched "Roadmap" section** ï¿½ versioned plan through v1.x.
 
 ### Internal
 
-- **PLANNING.md** � new private planning document (not committed; see `.gitignore`).
-- **.gitignore** � added private planning files.
+- **PLANNING.md** ï¿½ new private planning document (not committed; see `.gitignore`).
+- **.gitignore** ï¿½ added private planning files.
 
 ### Compatibility
 
@@ -329,7 +390,7 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 **Response envelope ownership** - the middleware base is abstract. Each service
 implements `RenderErrorAsync` to render errors in its own shape. Only the catch logic,
-correlation header, and structured logging are shared. See SPEC.md �ResponseEnvelopeOwnership.
+correlation header, and structured logging are shared. See SPEC.md ï¿½ResponseEnvelopeOwnership.
 
 **Fallback is per-call, not per-policy** - a retry policy is reusable; a fallback value
 is site-specific. The caller decides per call site whether a fallback makes sense.
@@ -370,44 +431,44 @@ circuit middle (rejects early when Open), timeout innermost (bounds a single att
   (previously the field was never assigned).
 
 
-## [0.2.0] � Stage C complete
+## [0.2.0] ï¿½ Stage C complete
 
 ### Added
 
-- `Correlation/CorrelationContext.cs` � ambient `AsyncLocal` correlation primitive
-- `Correlation/AsyncLocalCorrelationAccessor.cs` � DI adapter implementing `ICorrelationAccessor`
-- `Sinks/ConsoleLogSink.cs` � compact JSON Lines to stdout
-- `Sinks/FileLogSink.cs` � daily-rotating JSON Lines to file (`resilience-YYYY-MM-DD.jsonl`)
-- `Sinks/NullLogSink.cs` � silent no-op sink
-- `Sinks/CompositeLogSink.cs` � fan-out log sink with per-child exception isolation
-- `Sinks/InMemoryMetricSink.cs` � bounded rolling window with p50/p95/p99 and error rate
-- `Sinks/CompositeMetricSink.cs` � fan-out metric sink with per-child exception isolation
+- `Correlation/CorrelationContext.cs` ï¿½ ambient `AsyncLocal` correlation primitive
+- `Correlation/AsyncLocalCorrelationAccessor.cs` ï¿½ DI adapter implementing `ICorrelationAccessor`
+- `Sinks/ConsoleLogSink.cs` ï¿½ compact JSON Lines to stdout
+- `Sinks/FileLogSink.cs` ï¿½ daily-rotating JSON Lines to file (`resilience-YYYY-MM-DD.jsonl`)
+- `Sinks/NullLogSink.cs` ï¿½ silent no-op sink
+- `Sinks/CompositeLogSink.cs` ï¿½ fan-out log sink with per-child exception isolation
+- `Sinks/InMemoryMetricSink.cs` ï¿½ bounded rolling window with p50/p95/p99 and error rate
+- `Sinks/CompositeMetricSink.cs` ï¿½ fan-out metric sink with per-child exception isolation
 - 67 passing tests covering every sink, the correlation primitive, and the DI adapter
 
 ### Contract (Stage B, unchanged)
 
-- `Abstractions/` � interfaces: `ILogSink`, `IMetricSink`, `ICorrelationAccessor`,
+- `Abstractions/` ï¿½ interfaces: `ILogSink`, `IMetricSink`, `ICorrelationAccessor`,
   `ICircuitBreakerMonitor`, `ILatencyTracker`, `IResilienceExecutor`, `IResiliencePolicyRegistry`
-- `Configuration/` � options classes for retry, circuit, timeout, fallback, logging
-- `Errors/` � `ResilienceException`, `ResilienceErrorCategory`
-- `Events/` � `ResilienceEvent`, `ResilienceEventType`
+- `Configuration/` ï¿½ options classes for retry, circuit, timeout, fallback, logging
+- `Errors/` ï¿½ `ResilienceException`, `ResilienceErrorCategory`
+- `Events/` ï¿½ `ResilienceEvent`, `ResilienceEventType`
 
 ### Documentation
 
-- `docs/README.md` � index
-- `docs/correlation.md` � correlation concern
-- `docs/logging.md` � logging concern
-- `docs/metrics.md` � metrics concern
+- `docs/README.md` ï¿½ index
+- `docs/correlation.md` ï¿½ correlation concern
+- `docs/logging.md` ï¿½ logging concern
+- `docs/metrics.md` ï¿½ metrics concern
 
 ### Not yet implemented (future stages)
 
-- Stage D � error classification + policy builders
-- Stage E � circuit monitor, latency tracker, event emitter, policy registry
-- Stage F � the executor and DI extensions
-- Stage G � HttpClient handler and exception middleware base
-- Stage H � integration into landing-page-service, `/health/resilience` endpoint
+- Stage D ï¿½ error classification + policy builders
+- Stage E ï¿½ circuit monitor, latency tracker, event emitter, policy registry
+- Stage F ï¿½ the executor and DI extensions
+- Stage G ï¿½ HttpClient handler and exception middleware base
+- Stage H ï¿½ integration into landing-page-service, `/health/resilience` endpoint
 
-## [0.1.0] � Initial scaffold (Stage A + Stage B)
+## [0.1.0] ï¿½ Initial scaffold (Stage A + Stage B)
 
 ### Added
 

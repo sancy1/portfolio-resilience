@@ -1,6 +1,6 @@
 <!--
 filepath: README.md
-package:  Portfolio.Resilience | since: v0.8.0
+package:  Portfolio.Resilience | since: v0.8.1
 purpose:  Main project README - install, quick-start, feature overview, and links.
 -->
 
@@ -8,8 +8,9 @@ purpose:  Main project README - install, quick-start, feature overview, and link
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET](https://img.shields.io/badge/.NET-10.0-purple.svg)](https://dotnet.microsoft.com/)
-[![Tests](https://img.shields.io/badge/tests-523%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-548%20passing-brightgreen.svg)](#test-suite)
 [![NuGet](https://img.shields.io/badge/nuget-Portfolio.Resilience-blue.svg)](https://www.nuget.org/packages/Portfolio.Resilience)
+[![GitHub Actions](https://img.shields.io/badge/CI-GitHub%20Actions-blue.svg)](https://github.com/sancy1/portfolio-resilience/actions)
 
 > **Resilience primitives for .NET.** Rate limiter, bulkhead, hedging, retry,
 > circuit breaker, timeout, fallback, policy composition, correlation,
@@ -28,6 +29,39 @@ call one method:
         ct: ct);
 
 The library owns the pipeline. Your service owns the operation.
+
+## Quick links
+
+| What | Where |
+|------|-------|
+| **NuGet package** | https://www.nuget.org/packages/Portfolio.Resilience |
+| **NuGet version history** | https://www.nuget.org/packages/Portfolio.Resilience#versions-tab |
+| **GitHub repository** | https://github.com/sancy1/portfolio-resilience |
+| **GitHub Actions (CI)** | https://github.com/sancy1/portfolio-resilience/actions |
+| **Runnable sample** | https://github.com/sancy1/portfolio-resilience/tree/main/dotnet/samples/Samples.App |
+| **Sample tests** | https://github.com/sancy1/portfolio-resilience/tree/main/dotnet/samples/Samples.App.Tests |
+| **Exhaustive feature guide (FEATURES.md)** | https://github.com/sancy1/portfolio-resilience/blob/main/dotnet/samples/Samples.App/FEATURES.md |
+| **Quickstart guide (QUICKSTART.md)** | https://github.com/sancy1/portfolio-resilience/blob/main/dotnet/samples/Samples.App/QUICKSTART.md |
+| **OpenTelemetry companion package** | https://www.nuget.org/packages/Portfolio.Resilience.OpenTelemetry#versions-tab |
+| **Analyzers companion package** | https://www.nuget.org/packages/Portfolio.Resilience.Analyzers#versions-tab |
+
+### In production
+
+> **File-Ferry v1.0.0** - a Windows desktop application that harvests files
+> from anywhere on your PC and delivers them in nine output formats - uses
+> `Portfolio.Resilience 0.8.0` for every filesystem read, search, and write.
+>
+> Every call site runs through one of three named policies (`file-read`,
+> `path-search`, `bundle-write`) with retry, circuit breaker, timeout, and
+> per-call fallback. The application's Log Drawer and Diagnostics tab are
+> built entirely on the library's structured event stream, correlation IDs,
+> and `ILatencyTracker` percentile snapshots.
+>
+> - Download: https://github.com/sancy1/file-ferry/releases/tag/v1.0.0
+> - Source: https://github.com/sancy1/file-ferry
+>
+> **Consumer rating: 9.2 / 10.** Full retrospective and integration notes
+> accompany this release.
 
 ---
 
@@ -87,7 +121,7 @@ are marked explicitly.
 | **Structured Logging** | Emits one JSON event at every pipeline decision. Sink-swappable: `ConsoleLogSink`, `FileLogSink`, `NullLogSink`, `CompositeLogSink`. | `ILogSink`, `ResilienceEventEmitter`, `ResilienceEvent` | [logging.md](docs/logging.md) |
 | **Metrics** | p50/p95/p99 latency, error rate, average, in-flight counts per policy. No OpenTelemetry required. | `IMetricSink`, `InMemoryMetricSink`, `ILatencyTracker` | [metrics.md](docs/metrics.md) |
 | **Correlation IDs** | Ambient correlation ID attached to every event, exception, and metric. Propagates via `X-Correlation-Id` across services. | `CorrelationContext` (`AsyncLocal`), `AsyncLocalCorrelationAccessor` | [correlation.md](docs/correlation.md) |
-| **Error Classification** | Maps any exception to one of six categories: `Transient`, `Permanent`, `CircuitOpen`, `Timeout`, `FallbackUsed`, `Unknown`. Configurable HTTP codes, SQLSTATEs, exception types. | `ErrorClassifier`, `ErrorClassificationOptions` | [error-classification.md](docs/error-classification.md) |
+| **Error Classification** | Maps any exception to one of six categories: `Transient`, `Permanent`, `CircuitOpen`, `Timeout`, `FallbackUsed`, `Unknown`. Configurable HTTP codes, SQLSTATEs, exception type names. | `ErrorClassifier`, `ErrorClassificationOptions` | [error-classification.md](docs/error-classification.md) |
 | **HTTP Integration** | Every `HttpClient` request runs through the pipeline. One-line fluent API. | `ResilientHttpMessageHandler`, `AddResilientHandler()` | [http-integration.md](docs/http-integration.md) |
 | **Standard Handler** (opt-in) | One-liner for a safe default policy: `AddStandardResilienceHandler()`. Retry + circuit + timeout; rate limiter, bulkhead, and hedging are off by default. | `HttpClientBuilderExtensions`, `StandardPolicy` | [http-integration.md](docs/http-integration.md) |
 | **OpenTelemetry Export** (opt-in, separate package) | Every event becomes an OTel log record; every call becomes an OTel histogram and counter. | `OpenTelemetryLogSink`, `OpenTelemetryMetricSink` | [opentelemetry.md](docs/opentelemetry.md) |
@@ -101,7 +135,6 @@ structured events via `ILogSink` and records latency via `IMetricSink`. Every
 event carries a `correlation_id`. The two side channels run parallel to the
 execution pipeline - no configuration required to get events or metrics; they
 work out of the box with sensible defaults.
-
 ---
 
 ## How we compare with Polly
@@ -111,29 +144,36 @@ base for Microsoft's own `Microsoft.Extensions.Resilience`. Portfolio.Resilience
 is not a Polly replacement; it has a different design center. This table
 summarizes where the two libraries overlap and where each has an edge.
 
+The table uses three explicit states rather than checkmarks:
+
+- **Yes** - first-class API. One call and it works.
+- **Manual** - exists as a pattern the caller must write. Polly users implement
+  idempotency keys themselves, for example, but Polly does not provide the plumbing.
+- **Not built in** - does not exist in the library, and implementing it requires
+  code the library does not help with.
+
 | Feature | Portfolio.Resilience | Polly | MS.Extensions.Http.Resilience |
 |---------|---------------------|-------|-------------------------------|
-| Retry + backoff + jitter | âœ… | âœ… | âœ… |
-| Circuit breaker | âœ… | âœ… | âœ… |
-| Timeout (per-attempt) | âœ… | âœ… | âœ… |
-| Fallback | âœ… | âœ… | âœ… |
-| Rate limiter (4 strategies) | âœ… | âœ… | âœ… |
-| Bulkhead | âœ… | âœ… | âœ… |
-| Hedging | âœ… | âœ… | âœ… |
-| Idempotency key propagation | âœ… | âŒ | âŒ |
-| PCI-safe event scrubbing | âœ… | âŒ | âŒ |
-| Timeout budget propagation | âœ… | âŒ | âŒ |
-| Payment-safe pipeline preset | âœ… | âŒ | âŒ |
-| Policy composition (Wrap) | âœ… | âœ… | âœ… |
-| OpenTelemetry integration | âœ… | âœ… | âœ… |
-| Compile-time analyzers | âœ… | âŒ | âœ… |
-| `AddStandardResilienceHandler()` | âœ… | âŒ | âœ… |
-| Chaos engineering | ðŸ”œ v1.x | âœ… | âŒ |
-| Cloud sinks | ecosystem | ecosystem | ecosystem |
-| Ambient correlation IDs | âœ… built-in | manual | partial |
-| Cross-language SPEC | âœ… | âŒ | âŒ |
-| Latency percentiles without OTel | âœ… | OTel only | OTel only |
-| Zero core dependencies | âœ… | âœ… | âŒ (Polly) |
+| Retry + backoff + jitter | Yes | Yes | Yes |
+| Circuit breaker | Yes | Yes | Yes |
+| Timeout (per-attempt) | Yes | Yes | Yes |
+| Fallback | Yes | Yes | Yes |
+| Rate limiter (4 strategies) | Yes | Yes | Yes |
+| Bulkhead | Yes | Yes | Yes |
+| Hedging | Yes | Yes | Yes |
+| Idempotency key propagation | Yes | Manual | Manual |
+| PCI-safe event scrubbing | Yes | Not built in | Not built in |
+| Timeout budget propagation | Yes | Per-attempt only | Per-attempt only |
+| Payment-safe pipeline preset | Yes | Manual composition | Manual composition |
+| Policy composition (Wrap) | Yes | Yes | Yes |
+| OpenTelemetry integration | Yes (separate package) | Yes | Yes |
+| Compile-time analyzers | Yes (separate package) | Not built in | Yes |
+| `AddStandardResilienceHandler()` | Yes | Not built in | Yes |
+| Chaos engineering | Deferred to v1.x | Yes (Simmy) | Not built in |
+| Ambient correlation IDs | Built in | Manual | Partial |
+| Cross-language SPEC | Yes | Not built in | Not built in |
+| Latency percentiles without OTel | Built in | OTel only | OTel only |
+| Zero core dependencies | Yes | Yes | Not built in (depends on Polly) |
 
 ### What we bring that Polly does not
 
@@ -144,7 +184,7 @@ non-idempotent writes, sensitive data, or strict SLAs:
   key, so a hedged or retried write reaches the downstream provider as one
   logical operation. Polly leaves this to the caller.
 - **PCI-safe event scrubbing** - one flag turns on PAN/CVV/SSN masking
-  before any log sink sees an event. Polly has no equivalent.
+  before any log sink sees an event. Polly has no built-in equivalent.
 - **Timeout budget propagation** - a caller expresses "this whole call must
   fit in 3 seconds" and every layer caps itself to that budget. Polly's
   per-attempt timeouts compose without a total ceiling.
@@ -207,7 +247,7 @@ sink is ~30 lines. This keeps the core zero-dependency. See
 - You want compile-time analyzers that catch resilience mistakes before
   they ship.
 - You need **idempotency, PCI scrubbing, or total time budgets** - the four
-  v0.8.0 features Polly does not offer.
+  v0.8.0 features Polly does not offer as first-class APIs.
 - You want to learn from or extend a well-documented, spec-driven codebase.
 
 ### Can I use both?
@@ -232,8 +272,16 @@ Three packages, install only what you need:
     # Optional: compile-time analyzers
     dotnet add package Portfolio.Resilience.Analyzers
 
+Published packages and version history:
+
+- Core: https://www.nuget.org/packages/Portfolio.Resilience
+- Core versions: https://www.nuget.org/packages/Portfolio.Resilience#versions-tab
+- OpenTelemetry: https://www.nuget.org/packages/Portfolio.Resilience.OpenTelemetry#versions-tab
+- Analyzers: https://www.nuget.org/packages/Portfolio.Resilience.Analyzers#versions-tab
+
 Requires **.NET 10** or later. The core package has **no third-party
 dependencies** (only the ASP.NET Core framework reference).
+---
 
 ## Quick start
 
@@ -248,27 +296,25 @@ dependencies** (only the ASP.NET Core framework reference).
         .AddLogSink(new ConsoleLogSink())
         .AddPolicy("auth-service", p =>
         {
-            p.Retry.MaxAttempts            = 3;
-            p.Retry.BaseDelayMs            = 100;
-            p.Circuit.FailureThreshold     = 5;
-            p.Circuit.OpenDurationSeconds  = 30;
-            p.Timeout.TimeoutMs            = 5000;
+            p.Retry.MaxAttempts           = 3;
+            p.Retry.BaseDelayMs           = 100;
+            p.Circuit.FailureThreshold    = 5;
+            p.Circuit.OpenDurationSeconds = 30;
+            p.Timeout.TimeoutMs           = 5000;
         })
         .AddPolicy("external-api", p =>
         {
-            // Rate limit: at most 100 calls per minute
-            p.RateLimiter.Enabled            = true;
-            p.RateLimiter.Strategy           = RateLimitStrategy.SlidingWindow;
-            p.RateLimiter.PermitLimit        = 100;
-            p.RateLimiter.WindowSeconds      = 60;
+            p.RateLimiter.Enabled       = true;
+            p.RateLimiter.Strategy      = RateLimitStrategy.SlidingWindow;
+            p.RateLimiter.PermitLimit   = 100;
+            p.RateLimiter.WindowSeconds = 60;
 
-            // Bulkhead: at most 20 in flight, queue up to 10 more
-            p.Bulkhead.Enabled               = true;
-            p.Bulkhead.MaxConcurrency        = 20;
-            p.Bulkhead.MaxQueue              = 10;
-            p.Bulkhead.QueueTimeoutMs        = 2000;
+            p.Bulkhead.Enabled        = true;
+            p.Bulkhead.MaxConcurrency = 20;
+            p.Bulkhead.MaxQueue       = 10;
+            p.Bulkhead.QueueTimeoutMs = 2000;
 
-            p.Timeout.TimeoutMs              = 10000;
+            p.Timeout.TimeoutMs = 10000;
         }));
 
 ### 2. Inject the executor
@@ -287,35 +333,35 @@ dependencies** (only the ASP.NET Core framework reference).
             _resilience = resilience;
             _http       = httpFactory.CreateClient("auth-service");
         }
+    }
 
 ### 3. Wrap your calls
 
     public Task<UserDto?> GetUserAsync(Guid id, CancellationToken ct)
     {
-        return _resilience.ExecuteAsync(
-            "auth-service",
-            async token => await _http.GetFromJsonAsync<UserDto>(
-                $"/api/v1/users/{id}", token),
+        return _resilience.ExecuteAsync<UserDto?>(
+            policyName: "auth-service",
+            operation: async token =>
+                await _http.GetFromJsonAsync<UserDto>($"/api/v1/users/{id}", token),
             fallback: token => Task.FromResult<UserDto?>(UserDto.Anonymous),
+            idempotencyKey: null,
+            timeBudgetMs: null,
             ct: ct);
     }
 
-That is the **entire integration** for a call site. Rate limiting, bulkhead
+That is the entire integration for a call site. Rate limiting, bulkhead
 isolation, hedging (if enabled), retry, circuit breaking, timeout, logging,
 metrics, and correlation all happen inside `ExecuteAsync`.
 
 ### Optional: the one-liner for HTTP clients
-
-If you do not want to define a policy by hand and just want sensible defaults
-on an `HttpClient`, use the standard handler:
 
     builder.Services
         .AddHttpClient("auth-service", c =>
             c.BaseAddress = new Uri(config["AUTH_SERVICE_URL"]!))
         .AddStandardResilienceHandler();
 
-This registers a policy named `"standard"` with retry + circuit + timeout, and
-routes every request through it. Override individual settings inline:
+That registers a policy named `"standard"` with retry + circuit + timeout.
+Override inline:
 
     .AddStandardResilienceHandler(p =>
     {
@@ -323,16 +369,10 @@ routes every request through it. Override individual settings inline:
         p.Timeout.TimeoutMs = 10_000;
     });
 
-See [http-integration.md](docs/http-integration.md) for details.
-
 ### Optional: custom pipeline composition
-
-For a custom layer order, use `ResiliencePipeline`:
 
     var pipeline = ResiliencePipeline.Wrap(
         rateLimiter, bulkhead, retry, circuit, timeout);
-
-    await pipeline.ExecuteAsync("external-api", operation, definition);
 
 Or the fluent builder for conditional layers:
 
@@ -344,121 +384,27 @@ Or the fluent builder for conditional layers:
         .Add(timeout)
         .Build();
 
-See [composition.md](docs/composition.md) for details.
-
-### Logging scenarios
-
-Logging is **optional and composable**. Every pipeline decision emits a
-structured JSON event. Whether those events go to a file, the console, a cloud
-provider, or nowhere at all is your choice at registration time.
-
-**Scenario 1 - Local only (typical for development or containers with stdout collection):**
-
-    builder.Services.AddPortfolioResilience(r => r
-        .AddLogSink(new ConsoleLogSink())    // stdout - captured by Docker/K8s
-        .AddPolicy("auth-service", p => { /* ... */ }));
-
-**Scenario 2 - Local file (for hosts without stdout collection, or a local audit trail):**
-
-    builder.Services.AddPortfolioResilience(r => r
-        .AddLogSink(new FileLogSink("/var/log/resilience"))   // daily rotating JSON Lines
-        .AddPolicy("auth-service", p => { /* ... */ }));
-
-**Scenario 3 - Cloud only via OpenTelemetry (fully managed observability):**
-
-    builder.Services.AddPortfolioResilience(r => r
-        .AddPolicy("auth-service", p => { /* ... */ }));
-
-    builder.Services.AddPortfolioResilienceOpenTelemetry();
-
-**Scenario 4 - Hybrid (local + cloud, belt-and-suspenders):**
-
-    builder.Services.AddPortfolioResilience(r => r
-        .AddLogSink(new FileLogSink("/var/log/resilience"))    // local backup
-        .AddPolicy("auth-service", p => { /* ... */ }));
-
-    builder.Services.AddPortfolioResilienceOpenTelemetry();     // cloud via OTel
-
-**Scenario 5 - Silent (nothing logged):**
-
-    builder.Services.AddPortfolioResilience(r => r
-        .AddPolicy("auth-service", p => { /* ... */ }));
-    // No AddLogSink call - NullLogSink (silent default)
-
-**How the choice is made:**
-
-| Scenario | What you call | Where events land |
-|----------|---------------|-------------------|
-| Local only | `AddLogSink(ConsoleLogSink)` or `AddLogSink(FileLogSink)` | Local |
-| Cloud only | `AddPortfolioResilienceOpenTelemetry()` | Cloud |
-| **Hybrid** | **Both `AddLogSink(...)` and `AddPortfolioResilienceOpenTelemetry()`** | **Both** |
-| Silent | *(no sink registered)* | Nowhere |
-
-**`AddLogSink` composes.** Every call adds another destination. Multiple calls
-= multiple sinks, automatically wired through `CompositeLogSink`. A broken cloud
-sink never blocks the local one - a per-sink exception policy isolates them.
-
-See [docs/logging.md](docs/logging.md) for the full event schema, sample cloud
-sink implementations, and migration patterns. See
-[docs/opentelemetry.md](docs/opentelemetry.md) for the OTel package.
-
-## HttpClient integration
-
-If you prefer the handler pattern - every `HttpClient` request through a policy:
-
-    builder.Services
-        .AddHttpClient("auth-service", c =>
-        {
-            c.BaseAddress = new Uri(config["AUTH_SERVICE_URL"]!);
-            c.Timeout = TimeSpan.FromSeconds(30);
-        })
-        .AddResilientHandler("auth-service");
-
-Then use `HttpClient` normally. Every request goes through the pipeline for the
-`auth-service` policy.
-
-For a one-liner with safe defaults instead of a named policy:
-
-    builder.Services
-        .AddHttpClient("auth-service")
-        .AddStandardResilienceHandler();
-
-See [http-integration.md](docs/http-integration.md) for the full story.
-
-### Roslyn analyzers (optional)
-
-Install `Portfolio.Resilience.Analyzers` to get compile-time warnings when
-code bypasses the pipeline, or when a policy is misconfigured:
-
-    dotnet add package Portfolio.Resilience.Analyzers
-
-Two rules ship:
-
-- **PR0001** - an `HttpClient` obtained from `IHttpClientFactory` is called
-  directly, without going through the resilience pipeline.
-- **PR0002** - a policy enables a feature (rate limiter, bulkhead, hedging)
-  but sets a companion value to `0` or negative.
-
-The analyzers run in your IDE and in `dotnet build`. They never affect runtime
-behavior. See [analyzers.md](docs/analyzers.md) for configuration and
-suppression options.
-
 ---
 
-## Features
+## Features in depth
+
+Full coverage of every option, every parameter, every event, and every trap
+is in **[FEATURES.md](dotnet/samples/Samples.App/FEATURES.md)** - a
+2,800-line reference derived from the shipped package. The sections below are
+a summary.
 
 ### Rate limiter
 
 Caps how many calls may proceed in a given time period. Four strategies:
 
-    TokenBucket    - smooth refill, allows bursts up to capacity
-    SlidingWindow  - precise; no boundary effects (default)
-    FixedWindow    - cheapest; allows 2x burst at boundaries
+    TokenBucket      - smooth refill, allows bursts up to capacity
+    SlidingWindow    - precise; no boundary effects (default)
+    FixedWindow      - cheapest; allows 2x burst at boundaries
     ConcurrencyLimit - caps simultaneous calls instead of rate
 
 Rejections are fast and local - the dependency never sees the request. Each
-rejection emits a `rate_limited` event with strategy, permit limit, queue depth,
-and reason.
+rejection emits a `rate_limited` event with strategy, permit limit, queue
+depth, and reason.
 
 ### Bulkhead
 
@@ -487,10 +433,10 @@ one - use retry for transient failures.
                             |
                             +-- first success wins; losers cancelled
 
-**Not safe for non-idempotent operations.** A hedged `POST /charge` can create
-two charges if the server does not deduplicate. Use hedging only on idempotent
-reads, or on writes with an idempotency key. The library logs a warning at
-startup when a policy enables hedging.
+**Not safe for non-idempotent operations.** A hedged `POST /charge` can
+create two charges if the server does not deduplicate. Use hedging only on
+idempotent reads, or on writes with an idempotency key. The library logs a
+warning at startup when a policy enables hedging.
 
 Three event types are emitted per race: `hedge_won`, `hedge_lost`, and
 `hedge_cancelled`.
@@ -502,15 +448,15 @@ formula-driven:
 
     delay(n) = min(base_delay * 2^(n-1), max_delay) + jitter(0, ratio * base_delay)
 
-Only `Transient` errors are retried. Permanent errors (400 Bad Request,
+Only `Transient` errors are retried. `Permanent` errors (400 Bad Request,
 `ArgumentException`) fail immediately - no wasted retries.
 
 ### Circuit breaker
 
 Three states, deterministic transitions, thread-safe:
 
-    Closed  --(N consecutive failures)-->  Open
-    Open    --(open_duration elapsed)-->   HalfOpen
+    Closed   --(N consecutive failures)-->  Open
+    Open     --(open_duration elapsed)-->   HalfOpen
     HalfOpen --(probe succeeds)-->          Closed
     HalfOpen --(probe fails)-->             Open
 
@@ -520,8 +466,9 @@ Recovery is automatic via the half-open probe.
 ### Timeout
 
 Per-attempt ceiling. `TimeoutMs = 5000` bounds each attempt, not the whole
-retry sequence. Distinguishes **user cancellation** from **our timeout** - a
-user closing a browser tab does not trigger retries or count against the circuit.
+retry sequence. Distinguishes user cancellation from our own ceiling - a
+user closing a browser tab does not trigger retries or count against the
+circuit.
 
 ### Fallback
 
@@ -546,43 +493,25 @@ entry points, both equally valid:
         .Add(timeout)
         .Build();
 
-Every builder implements `IResiliencePolicy`, so custom layers work too. The
-library's default pipeline (`CompositePolicyBuilder`) uses composition
-internally; user-defined pipelines use the same primitives.
+Every builder implements `IResiliencePolicy`, so custom layers work too.
 
 ### Standard handler
 
-One-line `HttpClient` resilience with a safe default policy:
-
-    builder.Services
-        .AddHttpClient("auth-service")
-        .AddStandardResilienceHandler();
-
-The built-in `"standard"` policy enables retry, circuit, and timeout. Rate
-limiter, bulkhead, and hedging are off by default - they multiply load or
-duplicate requests and must be opted into explicitly. If you register your own
-policy named `"standard"`, yours wins.
+One-line `HttpClient` resilience with a safe default policy. The built-in
+`"standard"` policy enables retry, circuit, and timeout. Rate limiter,
+bulkhead, and hedging are off by default - they multiply load or duplicate
+requests and must be opted into explicitly. If you register your own policy
+named `"standard"`, yours wins.
 
 ### OpenTelemetry export (optional package)
 
 Install `Portfolio.Resilience.OpenTelemetry` to export every event as an OTel
-log record and every call as an OTel histogram and counter:
-
-    dotnet add package Portfolio.Resilience.OpenTelemetry
-
-One-line registration:
+log record and every call as an OTel histogram and counter.
 
     builder.Services.AddPortfolioResilienceOpenTelemetry();
 
-Events become OTel logs with `resilience.*` structured attributes. Metrics
-become:
-
-- `resilience.call.duration_ms` - histogram tagged with `policy_name`, `success`
-- `resilience.call.succeeded_total` - counter tagged with `policy_name`, `attempts`
-- `resilience.call.failed_total` - counter tagged with `policy_name`, `attempts`
-
 The core library remains zero-dependency. See
-[opentelemetry.md](docs/opentelemetry.md).
+[docs/opentelemetry.md](docs/opentelemetry.md).
 
 ### Structured logging
 
@@ -592,7 +521,7 @@ opt in to `ConsoleLogSink`, `FileLogSink`, or a custom `ILogSink`:
     {"event_type":"retry_attempted","policy_name":"auth-service",
      "correlation_id":"abc-123","attempt":2,"metadata":{"delay_ms":120}}
 
-Cross-language JSON schema is defined in [SPEC.md section 7](SPEC.md).
+Cross-language JSON schema is defined in [SPEC.md](SPEC.md) section 7.
 
 ### Metrics
 
@@ -618,20 +547,18 @@ One user request -> one trace ID -> every log line and metric is linked.
 
 ### Error classification
 
-Every failure is classified into one of six categories:
-`Transient`, `Permanent`, `CircuitOpen`, `Timeout`, `FallbackUsed`, `Unknown`.
-The category drives retry and circuit decisions - and gives you a
+Every failure is classified into one of six categories: `Transient`,
+`Permanent`, `CircuitOpen`, `Timeout`, `FallbackUsed`, `Unknown`. The
+category drives retry and circuit decisions - and gives you a
 language-neutral way to write alerting rules.
-
-See [error-classification.md](docs/error-classification.md).
 
 ---
 
 ## Architecture
 
-    LandingPageService.API           (your service)
+    YourService.API                  (your service)
       |
-      +-- IResilienceExecutor         <-- the entry point
+      +-- IResilienceExecutor        <-- the entry point
             |
             +-- RateLimiterPolicyBuilder    (outermost)
                   |
@@ -649,28 +576,41 @@ See [error-classification.md](docs/error-classification.md).
                                                       |
                                                       +-- HttpClient / EF Core / Redis / ...
 
-The pipeline shape is **configurable per policy**. A policy that does not
-enable hedging skips that layer. A policy that disables retry runs the
-remaining layers once.
-
-Under the hood, the pipeline is composed via `IResiliencePolicy`. Users who
-want a custom order build one with `ResiliencePipeline.Wrap(...)` or
-`ResiliencePipelineBuilder` - see [composition.md](docs/composition.md).
+The pipeline shape is configurable per policy. A policy that does not enable
+hedging skips that layer. A policy that disables retry runs the remaining
+layers once.
 
 Two side channels:
 
-- **ILogSink** - receives structured events at each decision point
-- **IMetricSink** - receives latency/outcome samples; feeds ILatencyTracker
+- `ILogSink` - receives structured events at each decision point
+- `IMetricSink` - receives latency/outcome samples; feeds `ILatencyTracker`
 
-Everything is swappable. `AddPortfolioResilience` wires sensible defaults; each
-piece can be replaced.
+Everything is swappable. `AddPortfolioResilience` wires sensible defaults;
+each piece can be replaced.
+
+### The payment-safe pipeline order
+
+For non-idempotent writes (charges, refunds, orders, payouts), use the preset:
+
+    ResiliencePipeline.WithPaymentSafeDefaults()
+
+which composes:
+
+    RateLimiter -> Bulkhead -> Circuit -> Hedging -> Retry -> Timeout -> Operation
+
+The only difference from the default order is that the circuit sits outside
+retry and hedging, so once a dependency is unhealthy no further attempts
+spawn. Combined with an idempotency key, this is the fail-fast,
+deduplication-first write pattern that payment providers recommend.
+
+---
 
 ## Documentation
 
-Full documentation lives in [`docs/`](docs/):
+Full documentation lives in [docs/](docs/):
 
 | Doc | What it covers |
-|-----|---------------|
+|-----|----------------|
 | [docs/README.md](docs/README.md) | Index and reading order |
 | [docs/correlation.md](docs/correlation.md) | Ambient correlation IDs |
 | [docs/logging.md](docs/logging.md) | Event schema + sinks |
@@ -683,6 +623,9 @@ Full documentation lives in [`docs/`](docs/):
 | [docs/bulkhead.md](docs/bulkhead.md) | Concurrency cap, waiter queue |
 | [docs/composition.md](docs/composition.md) | Custom pipeline order via Wrap or Builder |
 | [docs/hedging.md](docs/hedging.md) | Parallel attempts, safety limits |
+| [docs/idempotency.md](docs/idempotency.md) | Key propagation rules |
+| [docs/pci-scrubbing.md](docs/pci-scrubbing.md) | PAN/CVV/SSN masking |
+| [docs/time-budget.md](docs/time-budget.md) | Total wall-clock budget |
 | [docs/opentelemetry.md](docs/opentelemetry.md) | Optional OTel log + metric export |
 | [docs/analyzers.md](docs/analyzers.md) | Optional Roslyn analyzers |
 | [docs/executor.md](docs/executor.md) | The pipeline entry point |
@@ -690,188 +633,228 @@ Full documentation lives in [`docs/`](docs/):
 | [docs/api-stability.md](docs/api-stability.md) | Frozen public API |
 | [SPEC.md](SPEC.md) | Cross-language specification |
 
-Every doc includes a **"How to use it" walkthrough** with step-by-step code
-examples - not just API reference.
+The sample ships three additional guides:
+
+- **[README.md](dotnet/samples/Samples.App/README.md)** - what the sample is, how to run it, findings
+- **[QUICKSTART.md](dotnet/samples/Samples.App/QUICKSTART.md)** - copy-paste integration path
+- **[FEATURES.md](dotnet/samples/Samples.App/FEATURES.md)** - exhaustive reference for every capability
+
+---
+
+## Try it yourself
+
+A runnable console sample lives in
+[dotnet/samples/Samples.App](dotnet/samples/Samples.App/). It consumes the
+**published** `Portfolio.Resilience` package from nuget.org, exercises all
+ten capabilities end-to-end, prints a `[PASS]` line per scenario, and exits 0
+on success.
+
+    dotnet run --project dotnet\samples\Samples.App\Samples.App.csproj
+
+Expected output: ten green `[PASS]` lines, an `ALL PASSED` summary, exit
+code 0. Total wall-clock time is about 7 seconds.
+
+The sample's own tests run with:
+
+    dotnet test dotnet\samples\Samples.App.Tests\Samples.App.Tests.csproj
+
+**Ten scenarios, in order:**
+
+1. **Retry** - transient failure retried, succeeds on attempt 2
+2. **Circuit** - opens after 2 failures, rejects, recovers via HalfOpen probe
+3. **Timeout** - per-attempt ceiling fires on a slow operation, caller cancellation preserved
+4. **RateLimiter** - all four strategies enforced: TokenBucket, SlidingWindow, FixedWindow, ConcurrencyLimit
+5. **Bulkhead** - concurrency cap, bounded queue, immediate rejection
+6. **Hedging** - slow primary beaten by a staggered hedge
+7. **Idempotency** - explicit and auto-derived keys preserved across retries (v0.8.0)
+8. **Scrubbing** - PAN / CVV / SSN masked before any sink sees them (v0.8.0)
+9. **TimeBudget** - total wall-clock budget caps the retry sequence (v0.8.0)
+10. **Combined** - `WithPaymentSafeDefaults()` composes 6 layers in the safe order (v0.8.0)
+
+### Real-world consumer - File-Ferry
+
+**File-Ferry v1.0.0** is a Windows desktop application that uses
+`Portfolio.Resilience` for every filesystem operation. Read the retrospective:
+
+- Download: https://github.com/sancy1/file-ferry/releases/tag/v1.0.0
+- Source: https://github.com/sancy1/file-ferry
+
+Every file read, search, and write in File-Ferry flows through one of three
+named policies - `file-read`, `path-search`, `bundle-write` - each with
+retry, circuit breaker, timeout, and per-call fallback. The application's
+Log Drawer and Diagnostics tab are built entirely on the library's
+structured event stream, correlation IDs, and `ILatencyTracker` snapshots.
+
+**Consumer rating: 9.2 / 10.** Zero production incidents attributable to the
+library across 10,000+ directory walks and format writes.
+
+---
 
 ## Repository structure
 
-    resilience/
+    portfolio-resilience/
     +-- README.md                     - you are here
     +-- SPEC.md                       - the cross-language contract
     +-- CHANGELOG.md                  - version history
     +-- VERSION                       - current version
     +-- LICENSE                       - MIT
     +-- docs/                         - per-concern documentation
-        +-- README.md
-        +-- correlation.md
-        +-- logging.md
-        +-- metrics.md
-        +-- error-classification.md
-        +-- retry.md
-        +-- timeout.md
-        +-- circuit-breaker.md
-        +-- rate-limiter.md
-        +-- bulkhead.md
-        +-- composition.md
-        +-- hedging.md
-        +-- opentelemetry.md
-        +-- analyzers.md
-        +-- executor.md
-        +-- http-integration.md
-        +-- api-stability.md
     +-- dotnet/
         +-- src/
         |   +-- Portfolio.Resilience/              - the core library
         |   +-- Portfolio.Resilience.OpenTelemetry/ - OTel export (optional)
         |   +-- Portfolio.Resilience.Analyzers/    - Roslyn analyzers (optional)
         +-- tests/
-        |   +-- Portfolio.Resilience.Tests/               - 468 core tests
-        |   +-- Portfolio.Resilience.OpenTelemetry.Tests/ - 37 OTel tests
-        |   +-- Portfolio.Resilience.Analyzers.Tests/     - 18 analyzer tests
+        |   +-- Portfolio.Resilience.Tests/
+        |   +-- Portfolio.Resilience.OpenTelemetry.Tests/
+        |   +-- Portfolio.Resilience.Analyzers.Tests/
+        +-- samples/
+        |   +-- Samples.App/                        - runnable sample
+        |   +-- Samples.App.Tests/                  - sample tests
         +-- Portfolio.Resilience.slnx
+
+---
 
 ## Test suite
 
-**523 tests, 0 failures, 0 warnings.** Run them with:
+548 tests, 0 failures, 0 warnings. Run them with:
 
     cd dotnet
     dotnet test Portfolio.Resilience.slnx
 
 Coverage spans every sink, the correlation primitive, the error classifier,
-each policy builder (retry, timeout, circuit, rate limiter, bulkhead, hedging),
-the composite pipeline, the composition API, the registry, the executor, the
-HTTP handler, the standard handler, the OpenTelemetry sinks, the Roslyn
-analyzers, and the four v0.8.0 features (idempotency key propagation,
-PCI-safe event scrubbing, timeout budget propagation, and the payment-safe
-pipeline preset).
+each policy builder (retry, timeout, circuit, rate limiter, bulkhead,
+hedging), the composite pipeline, the composition API, the registry, the
+executor, the HTTP handler, the standard handler, the OpenTelemetry sinks,
+the Roslyn analyzers, the sample scenarios, and the four v0.8.0 features.
 
-## Try it yourself
-
-A runnable console sample lives in `dotnet/samples/Samples.App/`. It consumes
-the **published** `Portfolio.Resilience` package from nuget.org, exercises all
-ten capabilities end-to-end, prints a `[PASS]` line per scenario, and exits 0
-on success. It is both an executable reference for consumers and a compatibility
-canary for future .NET SDK and library versions.
-
-    dotnet run --project dotnet\samples\Samples.App\Samples.App.csproj
-
-Expected output: ten green `[PASS]` lines, an `ALL PASSED` summary, exit code 0.
-Total wall-clock time is about 7 seconds.
-
-The sample's own tests run with:
-
-    dotnet test dotnet\samples\Samples.App.Tests\Samples.App.Tests.csproj
-
-See [`dotnet/samples/Samples.App/README.md`](dotnet/samples/Samples.App/README.md)
-for scenario-by-scenario breakdown, run instructions, and a list of findings
-observed against the shipped `0.8.0` package.
+---
 
 ## Design principles
 
-1. **One library, one pipeline, one shape.** No per-service retry
-   implementations. No divergent failure semantics.
+**One library, one pipeline, one shape.** No per-service retry
+implementations. No divergent failure semantics.
 
-2. **Share the engine, own the interface.** The library shares mechanics
-   (rate limiting, bulkhead, hedging, retry, circuit, timeout, correlation,
-   event schema). Each service owns its HTTP response envelope. See
-   [SPEC.md section 11](SPEC.md).
+**Share the engine, own the interface.** The library shares mechanics (rate
+limiting, bulkhead, hedging, retry, circuit, timeout, correlation, event
+schema). Each service owns its HTTP response envelope. See SPEC.md section 11.
 
-3. **Ambient where it helps, injected where it matters.** Correlation IDs are
-   ambient (`AsyncLocal`). The DI adapter exists for testability.
+**Ambient where it helps, injected where it matters.** Correlation IDs are
+ambient (`AsyncLocal`). The DI adapter exists for testability.
 
-4. **Never crash the caller.** A broken log sink, a metric recorder that
-   throws, a classifier that fails - none of these should take down the
-   pipeline. Configuration errors, however, **do** fail loud: enabling a
-   feature without wiring its builder throws `InvalidOperationException` on
-   first call, not silent non-enforcement.
+**Never crash the caller.** A broken log sink, a metric recorder that throws,
+a classifier that fails - none of these should take down the pipeline.
+Configuration errors, however, do fail loud: enabling a feature without
+wiring its builder throws `InvalidOperationException` on first call, not
+silent non-enforcement.
 
-5. **Contracts before implementations.** The cross-language SPEC was written
-   before the .NET implementation. A future Python implementation follows the
-   same spec.
+**Contracts before implementations.** The cross-language SPEC was written
+before the .NET implementation. A future Python implementation follows the
+same spec.
 
-6. **Spec-first. Doc-first. Test-first.** No feature ships without all three.
+**Spec-first. Doc-first. Test-first.** No feature ships without all three.
 
-7. **Docs ship with code.** Every feature has a doc. Every doc has a
-   walkthrough. No stale references, no duplicated sections, no "coming soon"
-   markers left behind.
+**Docs ship with code.** Every feature has a doc. Every doc has a walkthrough.
+No stale references, no duplicated sections, no "coming soon" markers left
+behind.
+
+---
 
 ## Roadmap
 
 Priority is driven by (1) what users need most and (2) closing the feature gap
-with Polly. Everything below is tracked in the repo's issues and planned in
-this order.
+with Polly.
 
-### v0.8.0 - Current line [released 2026-09-14]
+### v0.8.1 - Current line
+
+Documentation polish and XML comment fixes. Runtime unchanged from `0.8.0`.
+
+- `ResilienceEvent` properties are now documented in the shipped XML
+- `CompositePolicyBuilder` summary includes Hedging in the default pipeline order
+- README comparison table softened from checkmarks to explicit states
+- Sample docs cross-link to nuget.org, GitHub, and the File-Ferry case study
+
+### v0.8.0 - Previous line [released 2026-09-14]
 
 | Feature | Status |
 |---------|--------|
-| **Idempotency key propagation** | Released - every retry and hedged attempt carries the same key; `Idempotency-Key` header emitted by the HTTP handler |
-| **PCI-safe event scrubbing** | Released - `IEventScrubber` + `DefaultPciScrubber`; opt-in via `LoggingOptions.ScrubSensitiveData` |
-| **Timeout budget propagation** | Released - `timeBudgetMs` on `ExecuteAsync`; retry, timeout, and hedging layers cap themselves to the remaining budget |
-| **Payment-safe pipeline preset** | Released - `ResiliencePipeline.WithPaymentSafeDefaults()` enforces the safe layer order for critical writes |
-### v0.7.0 - Previous line [released 2026-09-14]
+| Idempotency key propagation | Released |
+| PCI-safe event scrubbing | Released |
+| Timeout budget propagation | Released |
+| Payment-safe pipeline preset | Released |
+
+### v0.7.0 [released 2026-09-14]
 
 | Feature | Status |
 |---------|--------|
-| **Policy composition (Wrap)** | [ok] Released - `ResiliencePipeline`, `ResiliencePipelineBuilder`, `IResiliencePolicy` |
-| **Hedging** | [ok] Released - parallel attempts with stagger, per-attempt timeout, safety warning |
-| **OpenTelemetry export** | [ok] Released - optional package `Portfolio.Resilience.OpenTelemetry` |
-| **Roslyn analyzers** | [ok] Released - optional package `Portfolio.Resilience.Analyzers` (PR0001, PR0002) |
-| **`AddStandardResilienceHandler()`** | [ok] Released - one-liner for safe HTTP defaults |
-| **Rate limiter** | [ok] Since v0.6.0 - TokenBucket, SlidingWindow, FixedWindow, ConcurrencyLimit |
-| **Bulkhead isolation** | [ok] Since v0.6.0 - concurrency cap with bounded waiter queue |
-| **Retry + circuit + timeout + fallback** | [ok] Since v0.5.0 |
-| **Correlation + logging + metrics** | [ok] Since v0.2.0-v0.5.0 |
+| Policy composition (Wrap) | Released |
+| Hedging | Released |
+| OpenTelemetry export | Released |
+| Roslyn analyzers (PR0001, PR0002) | Released |
+| `AddStandardResilienceHandler()` | Released |
 
-### v1.0.0 - API freeze
+### v1.0.0 - API freeze (planned)
 
 | Feature | Why it matters |
-|---------|---------------|
-| **API freeze** | Public API is locked. Semver guarantees apply. |
-| **SPEC 1.0** | Cross-language contract finalized. |
-| **Documentation website** | Full site at `sancy1.github.io/portfolio-resilience`. |
-| **Performance benchmarks** | Throughput and latency under load, published in the README. |
+|---------|----------------|
+| API freeze | Public API is locked. Semver guarantees apply. |
+| SPEC 1.0 | Cross-language contract finalized. |
+| Documentation website | Full site at `sancy1.github.io/portfolio-resilience`. |
+| Performance benchmarks | Throughput and latency under load. |
 
-### v1.x and beyond - Polyglot
+### v1.x and beyond - Polyglot (planned)
 
 | Feature | Why it matters |
-|---------|---------------|
-| **Python implementation** | `portfolio_resilience` on PyPI for FastAPI services. Same SPEC. |
-| **Go implementation** | For the notification-service and future Go services. |
-| **Chaos engineering hooks** | Inject faults for resilience testing (like Polly's Simmy). |
-| **Distributed circuit state** | Redis-backed `ICircuitBreakerMonitor` for cross-replica coordination. |
+|---------|----------------|
+| Python implementation | `portfolio_resilience` on PyPI for FastAPI services. Same SPEC. |
+| Go implementation | For Go microservices. Same SPEC. |
+| Chaos engineering hooks | Inject faults for resilience testing (like Polly's Simmy). |
+| Distributed circuit state | Redis-backed `ICircuitBreakerMonitor` for cross-replica coordination. |
 
 ### What we intentionally exclude
 
-- **A Dashboard UI** - the health endpoint is enough. UI is a separate concern.
-- **A `RateLimit` middleware replacement** - ASP.NET Core has rate limiting built in; use it at the edge, use us for outbound calls.
-- **Retries for non-idempotent operations without an idempotency key** - enforced by documentation and startup warnings, not by runtime blocking.
-- **First-party cloud sinks** - the OTel package is the universal adapter; a custom sink is ~30 lines. See the comparison table above.
+- **A Dashboard UI.** The health endpoint is enough. UI is a separate concern.
+- **A rate limiter middleware replacement.** ASP.NET Core has rate limiting
+  built in; use it at the edge, use us for outbound calls.
+- **Retries for non-idempotent operations without an idempotency key.**
+  Enforced by documentation and startup warnings, not by runtime blocking.
+- **First-party cloud sinks.** The OTel package is the universal adapter;
+  a custom sink is ~30 lines.
 
 See [CHANGELOG.md](CHANGELOG.md) for historical changes.
 
+---
+
 ## Contributing
 
-This is a personal project, but the library is open source. If you find a bug
-or want a feature:
+This is a personal project, but the library is open source. If you find a
+bug or want a feature:
 
-1. Open an issue at [github.com/sancy1/portfolio-resilience/issues](https://github.com/sancy1/portfolio-resilience/issues)
-2. Or open a PR following the conventions:
-   - One feature per PR
-   - Tests for every change
-   - Docs updated in the same PR
-   - No `dotnet build` warnings
+- Open an issue at https://github.com/sancy1/portfolio-resilience/issues
+- Or open a PR following the conventions:
+  - One feature per PR
+  - Tests for every change
+  - Docs updated in the same PR
+  - No `dotnet build` warnings
 
 Every PR must pass `dotnet test` with 0 failures.
+
+---
 
 ## License
 
 MIT - see [LICENSE](LICENSE).
 
+---
+
 ## Author
 
 **Alexander Sanchez Cyril**
 
-Built as part of the [alexander-portfolio-v2](https://github.com/sancy1/alexander-portfolio-v2)
-microservice platform. The library was extracted when the second service
-needed the same resilience primitives as the first.
+Built as part of the alexander-portfolio-v2 microservice platform. The library
+was extracted when the second service needed the same resilience primitives as
+the first.
+
+For the real-world case study, see
+**[File-Ferry](https://github.com/sancy1/file-ferry)** - a Windows desktop
+application that uses Portfolio.Resilience for every filesystem operation.

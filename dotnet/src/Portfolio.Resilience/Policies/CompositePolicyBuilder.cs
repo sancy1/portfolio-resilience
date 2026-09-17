@@ -1,12 +1,12 @@
 ﻿// filepath: src/Portfolio.Resilience/Policies/CompositePolicyBuilder.cs
 // layer: Policies | package: Portfolio.Resilience | since: v0.7.0
-// purpose: Composes the default resilience pipeline (RateLimiter -> Bulkhead -> Retry -> Circuit -> Timeout).
+// purpose: Composes the default resilience pipeline (RateLimiter -> Bulkhead -> Hedging -> Retry -> Circuit -> Timeout).
 // -----------------------------------------------------------------------------
 // RELATIONSHIPS
 //   Implements : n/a (orchestrator)
 //   Depends on : IResiliencePolicy, ResiliencePipeline, RateLimiterPolicyBuilder,
-//                BulkheadPolicyBuilder, RetryPolicyBuilder, CircuitPolicyBuilder,
-//                TimeoutPolicyBuilder, PolicyDefinition
+//                BulkheadPolicyBuilder, HedgingPolicyBuilder, RetryPolicyBuilder,
+//                CircuitPolicyBuilder, TimeoutPolicyBuilder, PolicyDefinition
 //   Used by    : ResilienceExecutor, ServiceCollectionExtensions
 //   See also   : docs/executor.md, docs/composition.md, SPEC.md section 15
 // -----------------------------------------------------------------------------
@@ -19,14 +19,14 @@ namespace Portfolio.Resilience.Policies;
 /// <summary>
 /// Runs an operation through the default resilience pipeline:
 /// <code>
-/// Caller -> RateLimiter -> Bulkhead -> Retry -> Circuit -> Timeout -> Operation
+/// Caller -> RateLimiter -> Bulkhead -> Hedging -> Retry -> Circuit -> Timeout -> Operation
 /// </code>
 /// </summary>
 /// <remarks>
 /// <para>
 /// Layers are enabled individually via <see cref="PolicyDefinition"/>. The rate
-/// limiter and bulkhead are applied only when their respective <c>Enabled</c>
-/// flags are true. Retry, circuit, and timeout are always applied - their
+/// limiter, bulkhead, and hedging layers are applied only when their respective
+/// <c>Enabled</c> flags are true. Retry, circuit, and timeout are always applied - their
 /// behavior is controlled by their own options (for example,
 /// <c>Retry.MaxAttempts = 0</c> disables retry).
 /// </para>
