@@ -554,6 +554,174 @@ language-neutral way to write alerting rules.
 
 ---
 
+### Idempotency key propagation (v0.8.0)
+
+Every retry and hedged attempt of the same logical call carries the same
+idempotency key. Downstream services that honour the key deduplicate on it,
+so a retried write reaches the destination as **one logical operation**.
+
+This is the foundation of safe retries on non-idempotent writes. Without it,
+retrying a `POST /charge` can charge the customer twice.
+
+    await _resilience.ExecuteAsync<ChargeResult>(
+        policyName: "payment-provider",
+        operation: ChargeAsync,
+        idempotencyKey: $"charge-{order.Id}",     // explicit - caller owns the key
+        ct: ct);
+
+    // Or pass null and let the library derive a stable key from the correlation ID:
+    await _resilience.ExecuteAsync<ChargeResult>(
+        policyName: "payment-provider",
+        operation: ChargeAsync,
+        idempotencyKey: null,
+        ct: ct);
+
+Inside the operation, read the propagated key with `IdempotencyContext.CurrentKey`.
+The `ResilientHttpMessageHandler` emits the `Idempotency-Key` HTTP header on
+every attempt automatically - the primary and every retry - when a key is present.
+
+Polly has no built-in equivalent. Callers implementing this pattern manually
+must remember to construct the key once and attach it to every attempt. This
+library propagates it through the pipeline so every call site gets the behaviour
+for free.
+
+Full coverage: [docs/idempotency.md](docs/idempotency.md).
+
+### PCI-safe event scrubbing (v0.8.0)
+
+One flag turns on PAN / CVV / SSN masking before any log sink sees an event.
+The scrubber runs once at the top of the sink fan-out, so every registered
+sink receives the masked copy - they never see the raw value.
+
+    builder.Services.AddPortfolioResilience(r => r
+        .AddPolicy("payment-provider", p =>
+        {
+            p.Retry.MaxAttempts          = 3;
+            p.Logging.ScrubSensitiveData = true;
+        }));
+
+Pattern families masked by the default scrubber:
+
+- **PAN** - 13 to 19 consecutive digits, optionally separated by spaces or dashes
+- **CVV / CVC** - 3 or 4 digits adjacent to the tokens "cvv" or "cvc"
+- **SSN** - US Social Security Number in the canonical `ddd-dd-dddd` format
+
+Replacement token: `[REDACTED]`. Custom scrubbers implement `IEventScrubber`.
+
+**Global scope (documented behaviour in 0.8.0):** once any policy sets
+`ScrubSensitiveData = true`, every event of every policy in the process is
+scrubbed. The flag is a signal that the process handles sensitive data, not a
+per-policy toggle. Setting it to `false` on another policy does not disable
+scrubbing.
+
+Polly ships no equivalent. This is a first line of defense, not a compliance
+guarantee - see `docs/pci-scrubbing.md` for the full caveats.
+
+### Total time budget (v0.8.0)
+
+A caller expresses "this whole call must fit in N milliseconds" and every layer
+caps itself to the remaining budget. Unlike per-attempt timeouts, the budget
+bounds the **entire pipeline** across retries, hedges, and the initial call.
+
+    await _resilience.ExecuteAsync<ChargeResult>(
+        policyName: "payment-safe-policy",
+        operation: ChargeAsync,
+        idempotencyKey: $"charge-{orderId}",
+        timeBudgetMs: 3000,               // total ceiling: 3 seconds
+        ct: ct);
+
+The retry layer stops retrying when the next attempt's delay cannot fit in
+the remaining budget. The timeout layer caps its per-attempt ceiling to
+`min(TimeoutMs, remaining)`. The pipeline returns within the budget or fails
+fast - whichever comes first.
+
+Example, verified by the sample: a policy with `Retry.MaxAttempts = 5` and
+`BaseDelayMs = 100`, unbounded, makes 6 attempts across ~3.2 seconds. The same
+policy with `timeBudgetMs: 1500` stops at 4 attempts in ~0.75 seconds.
+
+Polly composes per-attempt timeouts without a total ceiling. Building the total
+ceiling by hand is possible but easy to get subtly wrong. This library makes it
+a single parameter.
+
+Full coverage: [docs/time-budget.md](docs/time-budget.md).
+
+### Payment-safe pipeline preset (v0.8.0)
+
+For non-idempotent writes - charges, refunds, payouts, order submissions,
+ledger writes - the layer order matters. The default pipeline is:
+
+    RateLimiter -> Bulkhead -> Hedging -> Retry -> Circuit -> Timeout -> Operation
+
+Notice that **Circuit sits inside Retry and Hedging**. That means when Retry
+fires another attempt, it goes through Circuit again. When Hedging fires a
+parallel attempt, it goes through Circuit too. Under a slow-but-eventually-
+successful provider, this can produce **two successful charges**: the primary
+attempt and a hedge fired 50ms later, both eventually reaching the provider.
+
+The payment-safe order moves Circuit **outside** Retry and Hedging:
+
+    RateLimiter -> Bulkhead -> Circuit -> Hedging -> Retry -> Timeout -> Operation
+
+Once the circuit opens, no new attempts spawn. The pipeline fails fast instead
+of racing retries against a struggling dependency. Combined with an idempotency
+key, this is the **fail-fast, deduplication-first** write pattern that Stripe,
+Adyen, Braintree, and Square all document in their own API guides.
+
+    using Portfolio.Resilience.Policies;
+
+    var pipeline = ResiliencePipeline.WithPaymentSafeDefaults();
+
+    // Optionally pass custom layer instances - nulls get fresh defaults.
+    var pipeline = ResiliencePipeline.WithPaymentSafeDefaults(
+        rateLimiter: myRateLimiter,
+        bulkhead:    myBulkhead,
+        circuit:     myCircuit,
+        hedging:     myHedging,   // leave disabled for writes unless you also use a key
+        retry:       myRetry,
+        timeout:     myTimeout);
+
+A complete charge call:
+
+    using Portfolio.Resilience.Correlation;
+
+    using var scope = IdempotencyContext.Push($"charge-{order.Id}");
+
+    var charge = await pipeline.ExecuteAsync<ChargeResult>(
+        policyName: "charge-pipeline",
+        operation: async token =>
+        {
+            var key = IdempotencyContext.CurrentKey;
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/charges")
+            {
+                Content = JsonContent.Create(new { amount = order.Total, currency = order.Currency })
+            };
+            if (!string.IsNullOrEmpty(key))
+            {
+                request.Headers.Add("Idempotency-Key", key);
+            }
+
+            using var response = await _http.SendAsync(request, token);
+            response.EnsureSuccessStatusCode();
+            return await response.Content.ReadFromJsonAsync<ChargeResult>(cancellationToken: token)
+                ?? throw new InvalidOperationException("empty charge response");
+        },
+        definition: _chargeDefinition,
+        ct: ct);
+
+Use it on: charges, refunds, payouts, order submissions, event publishes to a
+non-idempotent bus, ledger writes, inventory reservations.
+
+Do not use it on: reads (the default order is fine and retries more
+aggressively), or writes the downstream already deduplicates deterministically.
+
+Polly requires composing this order by hand. Getting it wrong - putting the
+circuit inside retry on a payment path - is a subtle bug that only shows up
+under load. The preset encodes the correct order in one call.
+
+Full fintech chapter with worked examples: FEATURES.md Section 14
+(https://github.com/sancy1/portfolio-resilience/blob/main/dotnet/samples/Samples.App/FEATURES.md).
+
 ## Architecture
 
     YourService.API                  (your service)
